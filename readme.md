@@ -36,7 +36,7 @@ If each main request can now handle the depth of what might have taken 5 separat
 
 It's a single, mighty rule I've put together. The Python script is **embedded inside it**.
 
-1.  **Copy THE Rule:** You'll need the "Review Gate" rule text that we I perfected.
+1.  **Copy THE Rule:** You'll need the "Review Gate" rule text that I perfected.
 2.  **Cursor Settings:** Open your Cursor IDE settings.
 3.  **Global AI Rules:** Find the section for "Rules".
 4.  **Paste & Save:** Paste the entire rule. Save.
