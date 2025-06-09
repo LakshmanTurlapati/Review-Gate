@@ -1,6 +1,7 @@
 const vscode = require('vscode');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const { spawn } = require('child_process');
 
 let chatPanel = null;
@@ -10,6 +11,23 @@ let mcpStatus = false;
 let statusCheckInterval = null;
 let currentTriggerData = null;
 let currentRecording = null;
+
+// Utility functions for Windows compatibility
+function getTempDir() {
+    return os.tmpdir();
+}
+
+function getLogFile() {
+    return path.join(getTempDir(), 'review_gate_v2.log');
+}
+
+function getUserInputsLogFile() {
+    return path.join(getTempDir(), 'review_gate_user_inputs.log');
+}
+
+function getTempFilePath(filename) {
+    return path.join(getTempDir(), filename);
+}
 
 function activate(context) {
     console.log('Review Gate V2 extension is now active in Cursor for MCP integration!');
@@ -59,20 +77,18 @@ function logUserInput(inputText, eventType = 'MESSAGE', triggerId = null, attach
     if (outputChannel) {
         outputChannel.appendLine(logMsg);
     }
-    
-    // Write to file for external monitoring
+      // Write to file for external monitoring
     try {
-        const logFile = '/tmp/review_gate_user_inputs.log';
-        fs.appendFileSync(logFile, `${logMsg}\n`);
-        
-        // Write response file for MCP server integration if we have a trigger ID
+        const logFile = getUserInputsLogFile();
+        fs.appendFileSync(logFile, `${logMsg}\n`, 'utf8');
+          // Write response file for MCP server integration if we have a trigger ID
         if (triggerId && eventType === 'MCP_RESPONSE') {
             // Write multiple response file patterns for better compatibility
             const responsePatterns = [
-                `/tmp/review_gate_response_${triggerId}.json`,
-                `/tmp/review_gate_response.json`,  // Fallback generic response
-                `/tmp/mcp_response_${triggerId}.json`,  // Alternative pattern
-                `/tmp/mcp_response.json`  // Generic MCP response
+                getTempFilePath(`review_gate_response_${triggerId}.json`),
+                getTempFilePath('review_gate_response.json'),  // Fallback generic response
+                getTempFilePath(`mcp_response_${triggerId}.json`),  // Alternative pattern
+                getTempFilePath('mcp_response.json')  // Generic MCP response
             ];
             
             const responseData = {
@@ -87,11 +103,10 @@ function logUserInput(inputText, eventType = 'MESSAGE', triggerId = null, attach
             };
             
             const responseJson = JSON.stringify(responseData, null, 2);
-            
-            // Write to all response file patterns
+              // Write to all response file patterns
             responsePatterns.forEach(responseFile => {
                 try {
-                    fs.writeFileSync(responseFile, responseJson);
+                    fs.writeFileSync(responseFile, responseJson, 'utf8');
                     logMessage(`MCP response written: ${responseFile}`);
                 } catch (writeError) {
                     logMessage(`Failed to write response file ${responseFile}: ${writeError.message}`);
@@ -128,7 +143,7 @@ function startMcpStatusMonitoring(context) {
 function checkMcpStatus() {
     try {
         // Check if MCP server log exists and is recent
-        const mcpLogPath = '/tmp/review_gate_v2.log';
+        const mcpLogPath = getLogFile();
         if (fs.existsSync(mcpLogPath)) {
             const stats = fs.statSync(mcpLogPath);
             const now = Date.now();
@@ -169,7 +184,7 @@ function startReviewGateIntegration(context) {
     // Silent integration start
     
     // Watch for Review Gate trigger file
-    const triggerFilePath = '/tmp/review_gate_trigger.json';
+    const triggerFilePath = getTempFilePath('review_gate_trigger.json');
     
     // Check for existing trigger file first
     checkTriggerFile(context, triggerFilePath);
@@ -182,7 +197,7 @@ function startReviewGateIntegration(context) {
         
         // Check backup trigger files
         for (let i = 0; i < 3; i++) {
-            const backupTriggerPath = `/tmp/review_gate_trigger_${i}.json`;
+            const backupTriggerPath = getTempFilePath(`review_gate_trigger_${i}.json`);
             checkTriggerFile(context, backupTriggerPath);
         }
     }, 250); // Check every 250ms for better performance
@@ -360,9 +375,8 @@ function sendExtensionAcknowledgement(triggerId, toolType) {
             extension: 'review-gate-v2',
             popup_activated: true
         };
-        
-        const ackFile = `/tmp/review_gate_ack_${triggerId}.json`;
-        fs.writeFileSync(ackFile, JSON.stringify(ackData, null, 2));
+          const ackFile = getTempFilePath(`review_gate_ack_${triggerId}.json`);
+        fs.writeFileSync(ackFile, JSON.stringify(ackData, null, 2), 'utf8');
         
         // Silent acknowledgement 
         
@@ -1375,9 +1389,8 @@ async function handleSpeechToText(audioData, triggerId, isFilePath = false) {
             // Convert base64 audio data to buffer (legacy webview approach)
             const base64Data = audioData.split(',')[1];
             const audioBuffer = Buffer.from(base64Data, 'base64');
-            
-            // Save audio to temp file
-            tempAudioPath = `/tmp/review_gate_audio_${triggerId}_${Date.now()}.wav`;
+              // Save audio to temp file
+            tempAudioPath = getTempFilePath(`review_gate_audio_${triggerId}_${Date.now()}.wav`);
             require('fs').writeFileSync(tempAudioPath, audioBuffer);
             
             console.log(`Audio saved for transcription: ${tempAudioPath}`);
@@ -1396,9 +1409,8 @@ async function handleSpeechToText(audioData, triggerId, isFilePath = false) {
             },
             mcp_integration: true
         };
-        
-        const triggerFile = `/tmp/review_gate_speech_trigger_${triggerId}.json`;
-        require('fs').writeFileSync(triggerFile, JSON.stringify(transcriptionRequest, null, 2));
+          const triggerFile = getTempFilePath(`review_gate_speech_trigger_${triggerId}.json`);
+        require('fs').writeFileSync(triggerFile, JSON.stringify(transcriptionRequest, null, 2), 'utf8');
         
         console.log(`Speech-to-text request sent: ${triggerFile}`);
         
@@ -1406,9 +1418,8 @@ async function handleSpeechToText(audioData, triggerId, isFilePath = false) {
         const maxWaitTime = 30000; // 30 seconds
         const pollInterval = 500; // 500ms
         let waitTime = 0;
-        
-        const pollForResult = setInterval(() => {
-            const resultFile = `/tmp/review_gate_speech_response_${triggerId}.json`;
+          const pollForResult = setInterval(() => {
+            const resultFile = getTempFilePath(`review_gate_speech_response_${triggerId}.json`);
             
             if (require('fs').existsSync(resultFile)) {
                 try {
@@ -1483,9 +1494,8 @@ function startNodeRecording(triggerId) {
             }
             return;
         }
-        
-        const timestamp = Date.now();
-        const audioFile = `/tmp/review_gate_audio_${triggerId}_${timestamp}.wav`;
+          const timestamp = Date.now();
+        const audioFile = getTempFilePath(`review_gate_audio_${triggerId}_${timestamp}.wav`);
         
         console.log(`🎤 Starting SoX recording: ${audioFile}`);
         
