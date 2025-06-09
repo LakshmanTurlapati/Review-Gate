@@ -71,7 +71,7 @@ sox --version >nul 2>&1
 if errorlevel 1 (
     if "!CHOCO_AVAILABLE!"=="true" (
         echo 📦 Installing SoX via Chocolatey...
-        choco install sox -y
+        choco install sox.portable -y
         if errorlevel 1 (
             echo ⚠️ Failed to install SoX via Chocolatey
             echo 💡 Please install SoX manually from http://sox.sourceforge.net/
@@ -147,55 +147,7 @@ if exist "!CURSOR_MCP_FILE!" (
 
 REM Create MCP configuration using Python (simpler than parsing JSON in batch)
 echo 📝 Creating MCP configuration...
-!PYTHON_CMD! -c "
-import json
-import os
-
-mcp_file = r'!CURSOR_MCP_FILE!'
-review_gate_dir = r'!REVIEW_GATE_DIR!'
-
-# Try to read existing configuration
-existing_servers = {}
-if os.path.exists(mcp_file):
-    try:
-        with open(mcp_file, 'r') as f:
-            config = json.load(f)
-        existing_servers = config.get('mcpServers', {})
-        # Remove review-gate-v2 if it exists (we'll add the new one)
-        existing_servers.pop('review-gate-v2', None)
-        print('✅ Found existing MCP servers, merging configurations')
-    except:
-        print('⚠️ Existing config invalid, creating new one')
-        existing_servers = {}
-else:
-    print('📝 Creating new MCP configuration file')
-
-# Add Review Gate V2 server
-existing_servers['review-gate-v2'] = {
-    'command': os.path.join(review_gate_dir, 'venv', 'Scripts', 'python.exe'),
-    'args': [os.path.join(review_gate_dir, 'review_gate_v2_mcp.py')],
-    'env': {
-        'PYTHONPATH': review_gate_dir,
-        'PYTHONUNBUFFERED': '1',
-        'REVIEW_GATE_MODE': 'cursor_integration'
-    }
-}
-
-# Create final config
-config = {'mcpServers': existing_servers}
-
-# Write to file
-try:
-    with open(mcp_file, 'w') as f:
-        json.dump(config, f, indent=2)
-    print('✅ MCP configuration updated successfully')
-    print(f'Total MCP servers configured: {len(existing_servers)}')
-    for name in existing_servers.keys():
-        print(f'  • {name}')
-except Exception as e:
-    print(f'❌ Failed to write MCP configuration: {e}')
-    exit(1)
-"
+!PYTHON_CMD! "%SCRIPT_DIR%\configure_mcp.py" "!CURSOR_MCP_FILE!" "!REVIEW_GATE_DIR!"
 
 if errorlevel 1 (
     echo ❌ Failed to create MCP configuration
