@@ -142,40 +142,57 @@ Write-ColorOutput "✅ Python environment created and dependencies installed" "G
 
 # Create MCP configuration
 $CursorMcpFile = Join-Path $env:USERPROFILE ".cursor\mcp.json"
-Write-ColorOutput "⚙️ Configuring MCP servers..." "Yellow"
+Write-ColorOutput "⚙️ Configuring MCP servers at $CursorMcpFile..." "Yellow"
 $CursorDir = Join-Path $env:USERPROFILE ".cursor"
 New-Item -Path $CursorDir -ItemType Directory -Force | Out-Null
 
-# Backup existing MCP configuration if it exists
+# Backup existing file before we touch anything
+$BackupFile = $null
 if (Test-Path $CursorMcpFile) {
     $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
     $BackupFile = "$CursorMcpFile.backup.$timestamp"
     Write-ColorOutput "💾 Backing up existing MCP configuration to: $BackupFile" "Yellow"
     Copy-Item $CursorMcpFile $BackupFile -Force
-    
-    # Check if the existing config is valid JSON
-    try {
-        $existingConfig = Get-Content $CursorMcpFile -Raw | ConvertFrom-Json
-        $existingServers = $existingConfig.mcpServers
-        if (-not $existingServers) {
-            $existingServers = @{}
-        }
-        # Remove review-gate-v2 if it exists (we'll add the new one)
-        if ($existingServers.PSObject.Properties.Name -contains "review-gate-v2") {
-            $existingServers.PSObject.Properties.Remove("review-gate-v2")
-        }
-        Write-ColorOutput "✅ Found existing MCP servers, merging configurations" "Green"
-    } catch {
-        Write-ColorOutput "⚠️ Existing MCP config has invalid JSON format" "Yellow"
-        Write-ColorOutput "💡 Creating new configuration file" "Yellow"
-        $existingServers = @{}
-    }
-} else {
-    Write-ColorOutput "📝 Creating new MCP configuration file" "Yellow"
-    $existingServers = @{}
 }
 
-# Create merged MCP configuration
+# Load existing configuration or create a new one
+$mcpConfig = $null
+if (Test-Path $CursorMcpFile) {
+    $content = Get-Content $CursorMcpFile -Raw -ErrorAction SilentlyContinue
+    if ([string]::IsNullOrWhiteSpace($content)) {
+        Write-ColorOutput "📝 MCP file is empty. Initializing new configuration." "Yellow"
+        $mcpConfig = @{ mcpServers = @{} } | ConvertTo-Json -Depth 10 | ConvertFrom-Json
+    } else {
+        try {
+            $mcpConfig = $content | ConvertFrom-Json
+        } catch {
+            Write-ColorOutput "❌ Existing MCP configuration at '$CursorMcpFile' is invalid JSON." "Red"
+            Write-ColorOutput "💡 Please fix the file manually or delete it, then re-run this script." "Yellow"
+            if ($BackupFile) {
+                Write-ColorOutput "🔄 Restoring from backup..." "Yellow"
+                Copy-Item $BackupFile $CursorMcpFile -Force
+                Write-ColorOutput "✅ Backup restored." "Green"
+            }
+            exit 1
+        }
+    }
+} else {
+    Write-ColorOutput "📝 No MCP file found. Creating new configuration file." "Yellow"
+    $mcpConfig = @{ mcpServers = @{} } | ConvertTo-Json -Depth 10 | ConvertFrom-Json
+}
+
+# Ensure mcpServers property exists
+if ($null -eq $mcpConfig) {
+    # This case should ideally not be hit due to above logic, but as a safeguard:
+    Write-ColorOutput "⚠️ Could not properly load or initialize MCP config. Creating a fresh one." "Yellow"
+    $mcpConfig = @{ mcpServers = @{} } | ConvertTo-Json -Depth 10 | ConvertFrom-Json
+}
+if (-not $mcpConfig.PSObject.Properties.Name.Contains('mcpServers')) {
+    Write-ColorOutput "📝 'mcpServers' key not found in existing config. Adding it." "Yellow"
+    $mcpConfig | Add-Member -MemberType NoteProperty -Name "mcpServers" -Value (@{} | ConvertTo-Json -Depth 10 | ConvertFrom-Json)
+}
+
+# Prepare the new Review Gate configuration
 $reviewGateConfig = @{
     command = $venvPython
     args = @(Join-Path $ReviewGateDir "review_gate_v2_mcp.py")
@@ -186,34 +203,27 @@ $reviewGateConfig = @{
     }
 }
 
-# Add Review Gate to existing servers
-$existingServers | Add-Member -MemberType NoteProperty -Name "review-gate-v2" -Value $reviewGateConfig -Force
+# Add or update the Review Gate server entry
+$mcpConfig.mcpServers.("review-gate-v2") = $reviewGateConfig | ConvertTo-Json | ConvertFrom-Json
 
-# Create final configuration
-$finalConfig = @{
-    mcpServers = $existingServers
-}
-
+# Write the updated configuration back to the file
 try {
-    $finalConfig | ConvertTo-Json -Depth 10 | Set-Content $CursorMcpFile -Encoding UTF8
-    Write-ColorOutput "✅ MCP configuration updated successfully at: $CursorMcpFile" "Green"
-    
-    # Show summary of configured servers
-    $serverCount = $existingServers.PSObject.Properties.Name.Count
+    $mcpConfig | ConvertTo-Json -Depth 10 | Set-Content -Path $CursorMcpFile -Encoding UTF8
+    Write-ColorOutput "✅ MCP configuration updated successfully." "Green"
+
+    $serverCount = $mcpConfig.mcpServers.PSObject.Properties.Count
     Write-ColorOutput "Total MCP servers configured: $serverCount" "Cyan"
-    foreach ($serverName in $existingServers.PSObject.Properties.Name) {
-        Write-ColorOutput "  • $serverName" "Cyan"
+    foreach ($server in $mcpConfig.mcpServers.PSObject.Properties) {
+        Write-ColorOutput "  • $($server.Name)" "Cyan"
     }
 } catch {
-    Write-ColorOutput "❌ Failed to create MCP configuration" "Red"
-    if (Test-Path $BackupFile) {
+    Write-ColorOutput "❌ Failed to write new MCP configuration." "Red"
+    if ($BackupFile -and (Test-Path $BackupFile)) {
         Write-ColorOutput "🔄 Restoring from backup..." "Yellow"
         Copy-Item $BackupFile $CursorMcpFile -Force
-        Write-ColorOutput "✅ Backup restored" "Green"
-    } else {
-        Write-ColorOutput "❌ No backup available, installation failed" "Red"
-        exit 1
+        Write-ColorOutput "✅ Backup restored." "Green"
     }
+    exit 1
 }
 
 # Test MCP server
