@@ -341,4 +341,16 @@ echo ""
 echo -e "${GREEN}✨ Enjoy your interactive Review Gate! ✨${NC}"
 
 # Final verification
+echo -e "${YELLOW}🔍 Final verification...${NC}"
+if [[ -f "$REVIEW_GATE_DIR/review_gate_v2_mcp.py" ]] && \
+   [[ -f "$CURSOR_MCP_FILE" ]] && \
+   [[ -d "$REVIEW_GATE_DIR/venv" ]]; then
+    echo -e "${GREEN}✅ All components installed successfully${NC}"
+    exit 0
+else
+    echo -e "${RED}❌ Some components may not have installed correctly${NC}"
+    echo -e "${YELLOW}💡 Please check the installation manually${NC}"
+    exit 1
+fi
+
 echo "Installation script finished." 
