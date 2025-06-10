@@ -20,28 +20,72 @@ echo -e "${BLUE}🚀 Review Gate V2 - One-Click Installation${NC}"
 echo -e "${BLUE}===========================================${NC}"
 echo ""
 
-# Check if running on macOS
-if [[ "$OSTYPE" != "darwin"* ]]; then
-    echo -e "${RED}❌ This script is designed for macOS only${NC}"
+# Detect OS
+OS_TYPE="Unknown"
+if [[ "$OSTYPE" == "linux-gnu"* ]]; then
+    OS_TYPE="Linux"
+    # Check for WSL
+    if grep -qE "(Microsoft|WSL)" /proc/version &> /dev/null; then
+        OS_TYPE="WSL"
+    fi
+elif [[ "$OSTYPE" == "darwin"* ]]; then
+    OS_TYPE="macOS"
+fi
+
+echo -e "${GREEN}✅ Detected Operating System: $OS_TYPE${NC}"
+
+if [[ "$OS_TYPE" == "Unknown" ]]; then
+    echo -e "${RED}❌ This script supports macOS, Linux, and WSL only${NC}"
     exit 1
 fi
 
-# Check if Homebrew is installed
-if ! command -v brew &> /dev/null; then
-    echo -e "${YELLOW}📦 Installing Homebrew...${NC}"
-    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-else
-    echo -e "${GREEN}✅ Homebrew already installed${NC}"
-fi
+# Install dependencies based on OS
+install_dependencies() {
+    echo -e "${YELLOW}🎤 Checking for SoX (for speech-to-text)...${NC}"
+    if command -v sox &> /dev/null; then
+        echo -e "${GREEN}✅ SoX already installed${NC}"
+        return
+    fi
 
-# Install SoX for speech-to-text
-echo -e "${YELLOW}🎤 Installing SoX for speech-to-text...${NC}"
-if ! command -v sox &> /dev/null; then
-    brew install sox
-    echo -e "${GREEN}✅ SoX installed successfully${NC}"
-else
-    echo -e "${GREEN}✅ SoX already installed${NC}"
-fi
+    if [[ "$OS_TYPE" == "macOS" ]]; then
+        # Check if Homebrew is installed
+        if ! command -v brew &> /dev/null; then
+            echo -e "${YELLOW}📦 Installing Homebrew...${NC}"
+            /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+        fi
+        echo -e "${YELLOW}🎤 Installing SoX...${NC}"
+        brew install sox
+    elif [[ "$OS_TYPE" == "Linux" || "$OS_TYPE" == "WSL" ]]; then
+        # Check for package manager
+        if command -v apt-get &> /dev/null; then
+            echo -e "${YELLOW}📦 Using apt-get to install SoX...${NC}"
+            sudo apt-get update && sudo apt-get install -y sox
+        elif command -v dnf &> /dev/null; then
+            echo -e "${YELLOW}📦 Using dnf to install SoX...${NC}"
+            sudo dnf install -y sox
+        elif command -v yum &> /dev/null; then
+            echo -e "${YELLOW}📦 Using yum to install SoX...${NC}"
+            sudo yum install -y sox
+        elif command -v pacman &> /dev/null; then
+            echo -e "${YELLOW}📦 Using pacman to install SoX...${NC}"
+            sudo pacman -S --noconfirm sox
+        else
+            echo -e "${RED}❌ Could not find a supported package manager (apt-get, dnf, yum, pacman)${NC}"
+            echo -e "${YELLOW}💡 Please install 'sox' manually and re-run the script.${NC}"
+            exit 1
+        fi
+    fi
+
+    if command -v sox &> /dev/null; then
+        echo -e "${GREEN}✅ SoX installed successfully${NC}"
+    else
+        echo -e "${RED}❌ SoX installation failed.${NC}"
+        exit 1
+    fi
+}
+
+# Install dependencies
+install_dependencies
 
 # Check if Python 3 is available
 if ! command -v python3 &> /dev/null; then
@@ -122,32 +166,39 @@ fi
 
 # Generate merged MCP config
 USERNAME=$(whoami)
-python3 -c "
+python3 -c '
 import json
+import sys
 
-# Parse existing servers
-existing_servers = json.loads('$EXISTING_SERVERS')
+# Parse existing servers from arguments
+try:
+    existing_servers = json.loads(sys.argv[1])
+except json.JSONDecodeError:
+    existing_servers = {}
+
+review_gate_dir = sys.argv[2]
+cursor_mcp_file = sys.argv[3]
 
 # Add Review Gate V2 server
-existing_servers['review-gate-v2'] = {
-    'command': '$REVIEW_GATE_DIR/venv/bin/python',
-    'args': ['$REVIEW_GATE_DIR/review_gate_v2_mcp.py'],
-    'env': {
-        'PYTHONPATH': '$REVIEW_GATE_DIR',
-        'PYTHONUNBUFFERED': '1',
-        'REVIEW_GATE_MODE': 'cursor_integration'
+existing_servers["review-gate-v2"] = {
+    "command": f"{review_gate_dir}/venv/bin/python",
+    "args": [f"{review_gate_dir}/review_gate_v2_mcp.py"],
+    "env": {
+        "PYTHONPATH": review_gate_dir,
+        "PYTHONUNBUFFERED": "1",
+        "REVIEW_GATE_MODE": "cursor_integration"
     }
 }
 
 # Create final config
-config = {'mcpServers': existing_servers}
+config = {"mcpServers": existing_servers}
 
 # Write to file
-with open('$CURSOR_MCP_FILE', 'w') as f:
+with open(cursor_mcp_file, "w") as f:
     json.dump(config, f, indent=2)
 
-print('MCP configuration updated successfully')
-"
+print("MCP configuration updated successfully")
+' "$EXISTING_SERVERS" "$REVIEW_GATE_DIR" "$CURSOR_MCP_FILE"
 
 # Validate the generated configuration
 if python3 -m json.tool "$CURSOR_MCP_FILE" > /dev/null 2>&1; then
@@ -201,21 +252,30 @@ if [[ -f "$EXTENSION_FILE" ]]; then
     echo -e "${BLUE}📋 MANUAL STEP REQUIRED:${NC}"
     echo -e "${YELLOW}Please complete the extension installation manually:${NC}"
     echo -e "1. Open Cursor IDE"
-    echo -e "2. Press Cmd+Shift+P"
+    echo -e "2. Press Cmd+Shift+P (macOS) or Ctrl+Shift+P (Linux/WSL)"
     echo -e "3. Type 'Extensions: Install from VSIX'"
     echo -e "4. Select: $REVIEW_GATE_DIR/review-gate-v2-2.5.2.vsix"
     echo -e "5. Restart Cursor when prompted"
     echo ""
     
     # Try to open Cursor if available
-    if command -v cursor &> /dev/null; then
-        echo -e "${YELLOW}🚀 Opening Cursor IDE...${NC}"
-        cursor . &
-    elif [[ -d "/Applications/Cursor.app" ]]; then
-        echo -e "${YELLOW}🚀 Opening Cursor IDE...${NC}"
-        open -a "Cursor" . &
-    else
-        echo -e "${YELLOW}💡 Please open Cursor IDE manually${NC}"
+    if [[ "$OS_TYPE" == "macOS" ]]; then
+        if command -v cursor &> /dev/null; then
+            echo -e "${YELLOW}🚀 Opening Cursor IDE...${NC}"
+            cursor . &
+        elif [[ -d "/Applications/Cursor.app" ]]; then
+            echo -e "${YELLOW}🚀 Opening Cursor IDE...${NC}"
+            open -a "Cursor" . &
+        else
+            echo -e "${YELLOW}💡 Please open Cursor IDE manually${NC}"
+        fi
+    else # Linux/WSL
+         if command -v cursor &> /dev/null; then
+            echo -e "${YELLOW}🚀 Opening Cursor IDE...${NC}"
+            cursor . &
+         else
+            echo -e "${YELLOW}💡 Please open Cursor IDE manually${NC}"
+         fi
     fi
 else
     echo -e "${RED}❌ Extension file not found: $EXTENSION_FILE${NC}"
@@ -223,12 +283,19 @@ else
 fi
 
 # Install global rule (optional)
-CURSOR_RULES_DIR="$HOME/Library/Application Support/Cursor/User/rules"
-if [[ -f "$SCRIPT_DIR/ReviewGate.mdc" ]]; then
+if [[ -f "$SCRIPT_DIR/ReviewGateV2.mdc" ]]; then
     echo -e "${YELLOW}📜 Installing global rule...${NC}"
+    
+    # Determine OS-specific rules directory
+    if [[ "$OS_TYPE" == "macOS" ]]; then
+        CURSOR_RULES_DIR="$HOME/Library/Application Support/Cursor/User/rules"
+    else # Linux or WSL
+        CURSOR_RULES_DIR="$HOME/.config/cursor/rules"
+    fi
+
     mkdir -p "$CURSOR_RULES_DIR"
-    cp "$SCRIPT_DIR/ReviewGate.mdc" "$CURSOR_RULES_DIR/"
-    echo -e "${GREEN}✅ Global rule installed${NC}"
+    cp "$SCRIPT_DIR/ReviewGateV2.mdc" "$CURSOR_RULES_DIR/"
+    echo -e "${GREEN}✅ Global rule installed to $CURSOR_RULES_DIR${NC}"
 fi
 
 # Clean up any existing temp files
@@ -243,39 +310,35 @@ echo -e "${BLUE}📍 Installation Summary:${NC}"
 echo -e "   • MCP Server: $REVIEW_GATE_DIR"
 echo -e "   • MCP Config: $CURSOR_MCP_FILE"
 echo -e "   • Extension: $REVIEW_GATE_DIR/review-gate-v2-2.5.2.vsix"
-echo -e "   • Global Rule: $CURSOR_RULES_DIR/ReviewGate.mdc"
+if [[ -n "$CURSOR_RULES_DIR" && -f "$CURSOR_RULES_DIR/ReviewGateV2.mdc" ]]; then
+    echo -e "   • Global Rule: $CURSOR_RULES_DIR/ReviewGateV2.mdc"
+fi
 echo ""
 echo -e "${BLUE}🧪 Testing Your Installation:${NC}"
 echo -e "1. Restart Cursor completely"
-echo -e "2. Press ${YELLOW}Cmd+Shift+R${NC} to test manual trigger"
-echo -e "3. Or ask Cursor Agent: ${YELLOW}'Use the review_gate_chat tool'${NC}"
+
+# Provide OS-specific instructions
+if [[ "$OS_TYPE" == "macOS" ]]; then
+    echo -e "2. Press ${YELLOW}Cmd+Shift+R${NC} to test manual trigger"
+else
+    echo -e "2. Press ${YELLOW}Ctrl+Shift+R${NC} to test manual trigger"
+fi
+echo "3. Or ask Cursor Agent: 'Use the review_gate_chat tool'"
+
 echo ""
-echo -e "${BLUE}🎤 Speech-to-Text Features:${NC}"
-echo -e "   • Click microphone icon in popup"
-echo -e "   • Speak clearly for 2-3 seconds"
-echo -e "   • Click stop to transcribe"
-echo ""
-echo -e "${BLUE}📷 Image Upload Features:${NC}"
-echo -e "   • Click camera icon in popup"
-echo -e "   • Select images (PNG, JPG, etc.)"
-echo -e "   • Images are included in response"
+if [[ "$OS_TYPE" == "WSL" ]]; then
+    echo -e "${YELLOW}🖥️  WSL Note:${NC}"
+    echo -e "   This script assumes you are running Cursor's GUI from within WSL (e.g., via WSLg)."
+    echo -e "   The MCP server is configured to run inside your WSL environment."
+fi
+
 echo ""
 echo -e "${BLUE}🔧 Troubleshooting:${NC}"
 echo -e "   • Logs: ${YELLOW}tail -f /tmp/review_gate_v2.log${NC}"
 echo -e "   • Test SoX: ${YELLOW}sox --version${NC}"
-echo -e "   • Browser Console: ${YELLOW}F12 in Cursor${NC}"
+echo -e "   • Browser Console: In Cursor, run 'Developer: Toggle Developer Tools' from the command palette."
 echo ""
-echo -e "${GREEN}✨ Enjoy your voice-activated Review Gate! ✨${NC}"
+echo -e "${GREEN}✨ Enjoy your interactive Review Gate! ✨${NC}"
 
 # Final verification
-echo -e "${YELLOW}🔍 Final verification...${NC}"
-if [[ -f "$REVIEW_GATE_DIR/review_gate_v2_mcp.py" ]] && \
-   [[ -f "$CURSOR_MCP_FILE" ]] && \
-   [[ -d "$REVIEW_GATE_DIR/venv" ]]; then
-    echo -e "${GREEN}✅ All components installed successfully${NC}"
-    exit 0
-else
-    echo -e "${RED}❌ Some components may not have installed correctly${NC}"
-    echo -e "${YELLOW}💡 Please check the installation manually${NC}"
-    exit 1
-fi
+echo "Installation script finished." 
