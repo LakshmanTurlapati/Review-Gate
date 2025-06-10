@@ -50,8 +50,10 @@ if [[ -f "$CURSOR_RULES_DIR/ReviewGate.mdc" ]]; then
     echo -e "${GREEN}✅ Removed global rule${NC}"
 fi
 
-# Clean up temp files
+# Clean up temp files from both old (/tmp) and new (system temp) locations
 rm -f /tmp/review_gate_* /tmp/mcp_response* 2>/dev/null || true
+TEMP_DIR=$(python3 -c 'import tempfile; print(tempfile.gettempdir())' 2>/dev/null || echo "/tmp")
+rm -f "$TEMP_DIR"/review_gate_* "$TEMP_DIR"/mcp_response* 2>/dev/null || true
 echo -e "${GREEN}✅ Cleaned up temporary files${NC}"
 
 echo ""

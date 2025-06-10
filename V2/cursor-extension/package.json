@@ -1,8 +1,8 @@
 {
   "name": "review-gate-v2",
   "displayName": "Review Gate V2 ゲート",
-  "description": "Advanced Review Gate system with MCP integration for Cursor IDE - No emojis, Font Awesome icons",
-  "version": "2.5.2",
+  "description": "Advanced Review Gate system with MCP integration for Cursor IDE",
+  "version": "2.6.3",
   "author": "Lakshman Turlapati",
   "publisher": "LakshmanTurlapati",
   "icon": "icon.png",
@@ -53,7 +53,6 @@
     "package": "vsce package"
   },
   "devDependencies": {
-    "@vscode/vsce": "^2.19.0"
-  },
-  "dependencies": {}
+    "@vscode/vsce": "^2.32.0"
+  }
 }

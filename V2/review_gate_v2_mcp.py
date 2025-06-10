@@ -17,6 +17,7 @@ import os
 import time
 import uuid
 import glob
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional, Sequence
@@ -42,20 +43,45 @@ from mcp.types import (
     EmbeddedResource,
 )
 
+# Cross-platform temp directory helper
+def get_temp_path(filename: str) -> str:
+    """Get cross-platform temporary file path"""
+    # Use /tmp/ for macOS and Linux, system temp for Windows
+    if os.name == 'nt':  # Windows
+        temp_dir = tempfile.gettempdir()
+    else:  # macOS and Linux
+        temp_dir = '/tmp'
+    return os.path.join(temp_dir, filename)
+
 # Configure logging with immediate flush
+log_file_path = get_temp_path('review_gate_v2.log')
+
+# Create handlers separately to handle Windows file issues
+handlers = []
+try:
+    # File handler - may fail on Windows if file is locked
+    file_handler = logging.FileHandler(log_file_path, mode='a', encoding='utf-8')
+    file_handler.setLevel(logging.INFO)
+    handlers.append(file_handler)
+except Exception as e:
+    # If file logging fails, just use stderr
+    print(f"Warning: Could not create log file: {e}", file=sys.stderr)
+
+# Always add stderr handler
+stderr_handler = logging.StreamHandler(sys.stderr)
+stderr_handler.setLevel(logging.INFO)
+handlers.append(stderr_handler)
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(sys.stderr),
-        logging.FileHandler('/tmp/review_gate_v2.log', mode='a')
-    ]
+    handlers=handlers
 )
 logger = logging.getLogger(__name__)
+logger.info(f"🔧 Log file path: {log_file_path}")
 
 # Force immediate log flushing
 for handler in logger.handlers:
-    handler.setLevel(logging.INFO)
     if hasattr(handler, 'flush'):
         handler.flush()
 
@@ -307,10 +333,10 @@ class ReviewGateServer:
         
         # Check all possible response file patterns
         response_patterns = [
-            "/tmp/review_gate_response_*.json",
-            "/tmp/review_gate_response.json",
-            "/tmp/mcp_response_*.json",
-            "/tmp/mcp_response.json"
+            os.path.join(tempfile.gettempdir(), "review_gate_response_*.json"),
+            get_temp_path("review_gate_response.json"),
+            os.path.join(tempfile.gettempdir(), "mcp_response_*.json"),
+            get_temp_path("mcp_response.json")
         ]
         
         import glob
@@ -559,7 +585,7 @@ class ReviewGateServer:
 
     async def _wait_for_extension_acknowledgement(self, trigger_id: str, timeout: int = 30) -> bool:
         """Wait for extension acknowledgement that popup was activated"""
-        ack_file = Path(f"/tmp/review_gate_ack_{trigger_id}.json")
+        ack_file = Path(get_temp_path(f"review_gate_ack_{trigger_id}.json"))
         
         logger.info(f"🔍 Monitoring for extension acknowledgement: {ack_file}")
         
@@ -596,10 +622,10 @@ class ReviewGateServer:
     async def _wait_for_user_input(self, trigger_id: str, timeout: int = 120) -> Optional[str]:
         """Wait for user input from the Cursor extension popup with frequent checks and multiple response patterns"""
         response_patterns = [
-            Path(f"/tmp/review_gate_response_{trigger_id}.json"),
-            Path(f"/tmp/review_gate_response.json"),  # Fallback generic response
-            Path(f"/tmp/mcp_response_{trigger_id}.json"),  # Alternative pattern
-            Path(f"/tmp/mcp_response.json")  # Generic MCP response
+            Path(get_temp_path(f"review_gate_response_{trigger_id}.json")),
+            Path(get_temp_path("review_gate_response.json")),  # Fallback generic response
+            Path(get_temp_path(f"mcp_response_{trigger_id}.json")),  # Alternative pattern
+            Path(get_temp_path("mcp_response.json"))  # Generic MCP response
         ]
         
         logger.info(f"👁️ Monitoring for response files: {[str(p) for p in response_patterns]}")
@@ -684,7 +710,7 @@ class ReviewGateServer:
             # Add delay before creating trigger to ensure readiness
             await asyncio.sleep(0.1)  # Wait 100ms before trigger creation
             
-            trigger_file = Path("/tmp/review_gate_trigger.json")
+            trigger_file = Path(get_temp_path("review_gate_trigger.json"))
             
             trigger_data = {
                 "timestamp": datetime.now().isoformat(),
@@ -748,7 +774,7 @@ class ReviewGateServer:
                 logger.info(f"🎯 This is expected behavior - extension is working properly")
             
             # Check if extension might be watching
-            log_file = Path("/tmp/review_gate_v2.log")
+            log_file = Path(get_temp_path("review_gate_v2.log"))
             if log_file.exists():
                 logger.info(f"📝 MCP log file exists: {log_file}")
             else:
@@ -774,7 +800,7 @@ class ReviewGateServer:
         try:
             # Create multiple backup trigger files
             for i in range(3):
-                backup_trigger = Path(f"/tmp/review_gate_trigger_{i}.json")
+                backup_trigger = Path(get_temp_path(f"review_gate_trigger_{i}.json"))
                 backup_data = {
                     "backup_id": i,
                     "timestamp": datetime.now().isoformat(),
@@ -810,9 +836,12 @@ class ReviewGateServer:
             # Create shutdown monitor task
             shutdown_task = asyncio.create_task(self._monitor_shutdown())
             
+            # Create heartbeat task to keep log file fresh for extension status monitoring
+            heartbeat_task = asyncio.create_task(self._heartbeat_logger())
+            
             # Wait for either server completion or shutdown request
             done, pending = await asyncio.wait(
-                [server_task, shutdown_task],
+                [server_task, shutdown_task, heartbeat_task],
                 return_when=asyncio.FIRST_COMPLETED
             )
             
@@ -829,6 +858,31 @@ class ReviewGateServer:
             else:
                 logger.info("🏁 Review Gate v2 server completed normally")
 
+    async def _heartbeat_logger(self):
+        """Periodically update log file to keep MCP status active in extension"""
+        logger.info("💓 Starting heartbeat logger for extension status monitoring")
+        heartbeat_count = 0
+        
+        while not self.shutdown_requested:
+            try:
+                # Update log every 10 seconds to keep file modification time fresh
+                await asyncio.sleep(10)
+                heartbeat_count += 1
+                
+                # Write heartbeat to log
+                logger.info(f"💓 MCP heartbeat #{heartbeat_count} - Server is active and ready")
+                
+                # Force log flush to ensure file is updated
+                for handler in logger.handlers:
+                    if hasattr(handler, 'flush'):
+                        handler.flush()
+                        
+            except Exception as e:
+                logger.error(f"❌ Heartbeat error: {e}")
+                await asyncio.sleep(5)
+        
+        logger.info("💔 Heartbeat logger stopped")
+    
     async def _monitor_shutdown(self):
         """Monitor for shutdown requests in a separate task"""
         while not self.shutdown_requested:
@@ -840,10 +894,10 @@ class ReviewGateServer:
         # Clean up any temporary files
         try:
             temp_files = [
-                "/tmp/review_gate_trigger.json",
-                "/tmp/review_gate_trigger_0.json",
-                "/tmp/review_gate_trigger_1.json", 
-                "/tmp/review_gate_trigger_2.json"
+                get_temp_path("review_gate_trigger.json"),
+                get_temp_path("review_gate_trigger_0.json"),
+                get_temp_path("review_gate_trigger_1.json"), 
+                get_temp_path("review_gate_trigger_2.json")
             ]
             for temp_file in temp_files:
                 if Path(temp_file).exists():
@@ -861,7 +915,7 @@ class ReviewGateServer:
             while not self.shutdown_requested:
                 try:
                     # Look for speech trigger files
-                    speech_triggers = glob.glob("/tmp/review_gate_speech_trigger_*.json")
+                    speech_triggers = glob.glob(os.path.join(tempfile.gettempdir(), "review_gate_speech_trigger_*.json"))
                     
                     for trigger_file in speech_triggers:
                         try:
@@ -949,7 +1003,7 @@ class ReviewGateServer:
                 'source': 'review_gate_whisper'
             }
             
-            response_file = f"/tmp/review_gate_speech_response_{trigger_id}.json"
+            response_file = get_temp_path(f"review_gate_speech_response_{trigger_id}.json")
             with open(response_file, 'w') as f:
                 json.dump(response_data, f, indent=2)
             
@@ -961,8 +1015,25 @@ class ReviewGateServer:
 async def main():
     """Main entry point for Review Gate v2 with immediate activation"""
     logger.info("🎬 STARTING Review Gate v2 MCP Server...")
-    server = ReviewGateServer()
-    await server.run()
+    logger.info(f"Python version: {sys.version}")
+    logger.info(f"Platform: {sys.platform}")
+    logger.info(f"OS name: {os.name}")
+    logger.info(f"Working directory: {os.getcwd()}")
+    
+    try:
+        server = ReviewGateServer()
+        await server.run()
+    except Exception as e:
+        logger.error(f"❌ Fatal error in MCP server: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        raise
 
 if __name__ == "__main__":
-    asyncio.run(main()) 
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("🛑 Server stopped by user")
+    except Exception as e:
+        logger.error(f"❌ Server crashed: {e}")
+        sys.exit(1) 

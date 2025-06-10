@@ -147,55 +147,59 @@ if exist "!CURSOR_MCP_FILE!" (
 
 REM Create MCP configuration using Python (simpler than parsing JSON in batch)
 echo 📝 Creating MCP configuration...
-!PYTHON_CMD! -c "
-import json
-import os
+REM Create temporary Python script for MCP configuration
+echo import json > temp_mcp_config.py
+echo import os >> temp_mcp_config.py
+echo. >> temp_mcp_config.py
+echo mcp_file = r'!CURSOR_MCP_FILE!' >> temp_mcp_config.py
+echo review_gate_dir = r'!REVIEW_GATE_DIR!' >> temp_mcp_config.py
+echo. >> temp_mcp_config.py
+echo # Try to read existing configuration >> temp_mcp_config.py
+echo existing_servers = {} >> temp_mcp_config.py
+echo if os.path.exists(mcp_file): >> temp_mcp_config.py
+echo     try: >> temp_mcp_config.py
+echo         with open(mcp_file, 'r') as f: >> temp_mcp_config.py
+echo             config = json.load(f) >> temp_mcp_config.py
+echo         existing_servers = config.get('mcpServers', {}) >> temp_mcp_config.py
+echo         existing_servers.pop('review-gate-v2', None) >> temp_mcp_config.py
+echo         print('✅ Found existing MCP servers, merging configurations') >> temp_mcp_config.py
+echo     except: >> temp_mcp_config.py
+echo         print('⚠️ Existing config invalid, creating new one') >> temp_mcp_config.py
+echo         existing_servers = {} >> temp_mcp_config.py
+echo else: >> temp_mcp_config.py
+echo     print('📝 Creating new MCP configuration file') >> temp_mcp_config.py
+echo. >> temp_mcp_config.py
+echo # Add Review Gate V2 server >> temp_mcp_config.py
+echo existing_servers['review-gate-v2'] = { >> temp_mcp_config.py
+echo     'command': os.path.join(review_gate_dir, 'venv', 'Scripts', 'python.exe'), >> temp_mcp_config.py
+echo     'args': [os.path.join(review_gate_dir, 'review_gate_v2_mcp.py')], >> temp_mcp_config.py
+echo     'env': { >> temp_mcp_config.py
+echo         'PYTHONPATH': review_gate_dir, >> temp_mcp_config.py
+echo         'PYTHONUNBUFFERED': '1', >> temp_mcp_config.py
+echo         'REVIEW_GATE_MODE': 'cursor_integration' >> temp_mcp_config.py
+echo     } >> temp_mcp_config.py
+echo } >> temp_mcp_config.py
+echo. >> temp_mcp_config.py
+echo # Create final config >> temp_mcp_config.py
+echo config = {'mcpServers': existing_servers} >> temp_mcp_config.py
+echo. >> temp_mcp_config.py
+echo # Write to file >> temp_mcp_config.py
+echo try: >> temp_mcp_config.py
+echo     with open(mcp_file, 'w') as f: >> temp_mcp_config.py
+echo         json.dump(config, f, indent=2) >> temp_mcp_config.py
+echo     print('✅ MCP configuration updated successfully') >> temp_mcp_config.py
+echo     print(f'Total MCP servers configured: {len(existing_servers)}') >> temp_mcp_config.py
+echo     for name in existing_servers.keys(): >> temp_mcp_config.py
+echo         print(f'  • {name}') >> temp_mcp_config.py
+echo except Exception as e: >> temp_mcp_config.py
+echo     print(f'❌ Failed to write MCP configuration: {e}') >> temp_mcp_config.py
+echo     exit(1) >> temp_mcp_config.py
 
-mcp_file = r'!CURSOR_MCP_FILE!'
-review_gate_dir = r'!REVIEW_GATE_DIR!'
+REM Execute the Python script
+!PYTHON_CMD! temp_mcp_config.py
 
-# Try to read existing configuration
-existing_servers = {}
-if os.path.exists(mcp_file):
-    try:
-        with open(mcp_file, 'r') as f:
-            config = json.load(f)
-        existing_servers = config.get('mcpServers', {})
-        # Remove review-gate-v2 if it exists (we'll add the new one)
-        existing_servers.pop('review-gate-v2', None)
-        print('✅ Found existing MCP servers, merging configurations')
-    except:
-        print('⚠️ Existing config invalid, creating new one')
-        existing_servers = {}
-else:
-    print('📝 Creating new MCP configuration file')
-
-# Add Review Gate V2 server
-existing_servers['review-gate-v2'] = {
-    'command': os.path.join(review_gate_dir, 'venv', 'Scripts', 'python.exe'),
-    'args': [os.path.join(review_gate_dir, 'review_gate_v2_mcp.py')],
-    'env': {
-        'PYTHONPATH': review_gate_dir,
-        'PYTHONUNBUFFERED': '1',
-        'REVIEW_GATE_MODE': 'cursor_integration'
-    }
-}
-
-# Create final config
-config = {'mcpServers': existing_servers}
-
-# Write to file
-try:
-    with open(mcp_file, 'w') as f:
-        json.dump(config, f, indent=2)
-    print('✅ MCP configuration updated successfully')
-    print(f'Total MCP servers configured: {len(existing_servers)}')
-    for name in existing_servers.keys():
-        print(f'  • {name}')
-except Exception as e:
-    print(f'❌ Failed to write MCP configuration: {e}')
-    exit(1)
-"
+REM Clean up temporary script
+del temp_mcp_config.py
 
 if errorlevel 1 (
     echo ❌ Failed to create MCP configuration
@@ -215,7 +219,7 @@ timeout /t 1 /nobreak >nul 2>&1
 echo ⚠️ MCP server test skipped (manual verification required)
 
 REM Install Cursor extension
-set "EXTENSION_FILE=%SCRIPT_DIR%\cursor-extension\review-gate-v2-2.5.2.vsix"
+set "EXTENSION_FILE=%SCRIPT_DIR%\cursor-extension\review-gate-v2-2.6.3.vsix"
 if exist "!EXTENSION_FILE!" (
     echo 🔌 Installing Cursor extension...
     copy "!EXTENSION_FILE!" "!REVIEW_GATE_DIR!\" >nul
@@ -226,7 +230,7 @@ if exist "!EXTENSION_FILE!" (
     echo 1. Open Cursor IDE
     echo 2. Press Ctrl+Shift+P
     echo 3. Type 'Extensions: Install from VSIX'
-    echo 4. Select: !REVIEW_GATE_DIR!\review-gate-v2-2.5.2.vsix
+    echo 4. Select: !REVIEW_GATE_DIR!\review-gate-v2-2.6.3.vsix
     echo 5. Restart Cursor when prompted
     echo.
     
@@ -256,8 +260,9 @@ if exist "%SCRIPT_DIR%\ReviewGate.mdc" (
 
 REM Clean up any existing temp files
 echo 🧹 Cleaning up temporary files...
-del /f /q "%TEMP%\review_gate_*" >nul 2>&1
-del /f /q "%TEMP%\mcp_response*" >nul 2>&1
+for /f "tokens=*" %%i in ('!PYTHON_CMD! -c "import tempfile; print(tempfile.gettempdir())"') do set "TEMP_DIR=%%i"
+del /f /q "!TEMP_DIR!\review_gate_*" >nul 2>&1
+del /f /q "!TEMP_DIR!\mcp_response*" >nul 2>&1
 
 echo.
 echo ==========================================
@@ -267,7 +272,7 @@ echo.
 echo 📍 Installation Summary:
 echo    • MCP Server: !REVIEW_GATE_DIR!
 echo    • MCP Config: !CURSOR_MCP_FILE!
-echo    • Extension: !REVIEW_GATE_DIR!\review-gate-v2-2.5.2.vsix
+echo    • Extension: !REVIEW_GATE_DIR!\review-gate-v2-2.6.3.vsix
 echo    • Global Rule: !CURSOR_RULES_DIR!\ReviewGate.mdc
 echo.
 echo 🧪 Testing Your Installation:
@@ -286,7 +291,7 @@ echo    • Select images (PNG, JPG, etc.)
 echo    • Images are included in response
 echo.
 echo 🔧 Troubleshooting:
-echo    • Logs: type %TEMP%\review_gate_v2.log
+echo    • Logs: type "!PYTHON_CMD! -c "import tempfile; print(tempfile.gettempdir())"\review_gate_v2.log"
 echo    • Test SoX: sox --version
 echo    • Browser Console: F12 in Cursor
 echo.

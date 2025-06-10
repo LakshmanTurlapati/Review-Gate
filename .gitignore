@@ -1,5 +1,5 @@
 # Review Gate V2 - Git Ignore Configuration
-
+.gitignore
 # Python
 __pycache__/
 *.py[cod]

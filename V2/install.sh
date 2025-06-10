@@ -231,18 +231,19 @@ fi
 echo -e "${YELLOW}🧪 Testing MCP server...${NC}"
 cd "$REVIEW_GATE_DIR"
 source venv/bin/activate
-timeout 5s python review_gate_v2_mcp.py > /tmp/mcp_test.log 2>&1 || true
+TEMP_DIR=$(python3 -c 'import tempfile; print(tempfile.gettempdir())')
+timeout 5s python review_gate_v2_mcp.py > "$TEMP_DIR/mcp_test.log" 2>&1 || true
 deactivate
 
-if grep -q "Review Gate 2.0 server initialized" /tmp/mcp_test.log; then
+if grep -q "Review Gate 2.0 server initialized" "$TEMP_DIR/mcp_test.log"; then
     echo -e "${GREEN}✅ MCP server test successful${NC}"
 else
     echo -e "${YELLOW}⚠️ MCP server test inconclusive (may be normal)${NC}"
 fi
-rm -f /tmp/mcp_test.log
+rm -f "$TEMP_DIR/mcp_test.log"
 
 # Install Cursor extension
-EXTENSION_FILE="$SCRIPT_DIR/cursor-extension/review-gate-v2-2.5.2.vsix"
+EXTENSION_FILE="$SCRIPT_DIR/cursor-extension/review-gate-v2-2.6.3.vsix"
 if [[ -f "$EXTENSION_FILE" ]]; then
     echo -e "${YELLOW}🔌 Installing Cursor extension...${NC}"
     
@@ -254,7 +255,7 @@ if [[ -f "$EXTENSION_FILE" ]]; then
     echo -e "1. Open Cursor IDE"
     echo -e "2. Press Cmd+Shift+P (macOS) or Ctrl+Shift+P (Linux/WSL)"
     echo -e "3. Type 'Extensions: Install from VSIX'"
-    echo -e "4. Select: $REVIEW_GATE_DIR/review-gate-v2-2.5.2.vsix"
+    echo -e "4. Select: $REVIEW_GATE_DIR/review-gate-v2-2.6.3.vsix"
     echo -e "5. Restart Cursor when prompted"
     echo ""
     
@@ -300,7 +301,8 @@ fi
 
 # Clean up any existing temp files
 echo -e "${YELLOW}🧹 Cleaning up temporary files...${NC}"
-rm -f /tmp/review_gate_* /tmp/mcp_response* 2>/dev/null || true
+TEMP_DIR=$(python3 -c 'import tempfile; print(tempfile.gettempdir())')
+rm -f "$TEMP_DIR"/review_gate_* "$TEMP_DIR"/mcp_response* 2>/dev/null || true
 
 echo ""
 echo -e "${GREEN}🎉 Review Gate V2 Installation Complete!${NC}"
@@ -334,7 +336,7 @@ fi
 
 echo ""
 echo -e "${BLUE}🔧 Troubleshooting:${NC}"
-echo -e "   • Logs: ${YELLOW}tail -f /tmp/review_gate_v2.log${NC}"
+echo -e "   • Logs: ${YELLOW}tail -f $(python3 -c 'import tempfile; print(tempfile.gettempdir())')/review_gate_v2.log${NC}"
 echo -e "   • Test SoX: ${YELLOW}sox --version${NC}"
 echo -e "   • Browser Console: In Cursor, run 'Developer: Toggle Developer Tools' from the command palette."
 echo ""
