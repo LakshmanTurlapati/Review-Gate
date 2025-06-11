@@ -125,28 +125,33 @@ USERNAME=$(whoami)
 python3 -c "
 import json
 
-# Parse existing servers
-existing_servers = json.loads('$EXISTING_SERVERS')
-
-# Add Review Gate V2 server
-existing_servers['review-gate-v2'] = {
-    'command': '$REVIEW_GATE_DIR/venv/bin/python',
-    'args': ['$REVIEW_GATE_DIR/review_gate_v2_mcp.py'],
-    'env': {
-        'PYTHONPATH': '$REVIEW_GATE_DIR',
-        'PYTHONUNBUFFERED': '1',
-        'REVIEW_GATE_MODE': 'cursor_integration'
+try:
+    # Parse existing servers
+    with open('$CURSOR_MCP_FILE', 'r') as f:
+        config = json.load(f)
+    existing_servers = config.get('mcpServers', {})
+    
+    # Add Review Gate V2 server
+    existing_servers['review-gate-v2'] = {
+        'command': '$REVIEW_GATE_DIR/venv/bin/python',
+        'args': ['$REVIEW_GATE_DIR/review_gate_v2_mcp.py'],
+        'env': {
+            'PYTHONPATH': '$REVIEW_GATE_DIR',
+            'PYTHONUNBUFFERED': '1',
+            'REVIEW_GATE_MODE': 'cursor_integration'
+        }
     }
-}
 
-# Create final config
-config = {'mcpServers': existing_servers}
+    # Create final config
+    config = {'mcpServers': existing_servers}
 
-# Write to file
-with open('$CURSOR_MCP_FILE', 'w') as f:
-    json.dump(config, f, indent=2)
+    # Write to file
+    with open('$CURSOR_MCP_FILE', 'w') as f:
+        json.dump(config, f, indent=2)
 
-print('MCP configuration updated successfully')
+    print('MCP configuration updated successfully')
+except Exception as e:
+    print('{}')
 "
 
 # Validate the generated configuration
