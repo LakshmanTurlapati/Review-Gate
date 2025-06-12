@@ -351,7 +351,7 @@ class ReviewGateServer:
                         response_file = Path(response_file_path)
                         if response_file.exists():
                             try:
-                                file_content = response_file.read_text().strip()
+                                file_content = response_file.read_text(encoding='utf-8').strip()
                                 logger.info(f"📄 Found response file {response_file}: {file_content[:200]}...")
                                 
                                 # Handle JSON format
@@ -595,7 +595,7 @@ class ReviewGateServer:
         while time.time() - start_time < timeout:
             try:
                 if ack_file.exists():
-                    data = json.loads(ack_file.read_text())
+                    data = json.loads(ack_file.read_text(encoding='utf-8'))
                     ack_status = data.get("acknowledged", False)
                     
                     # Clean up acknowledgement file immediately
@@ -640,7 +640,7 @@ class ReviewGateServer:
                 for response_file in response_patterns:
                     if response_file.exists():
                         try:
-                            file_content = response_file.read_text().strip()
+                            file_content = response_file.read_text(encoding='utf-8').strip()
                             logger.info(f"📄 Found response file {response_file}: {file_content[:200]}...")
                             
                             # Handle JSON format
@@ -723,10 +723,10 @@ class ReviewGateServer:
                 "immediate_activation": True
             }
             
-            logger.info(f"🎯 CREATING trigger file with data: {json.dumps(trigger_data, indent=2)}")
+            logger.info(f"🎯 CREATING trigger file with data: {json.dumps(trigger_data, indent=2, ensure_ascii=False)}")
             
             # Write trigger file with immediate flush
-            trigger_file.write_text(json.dumps(trigger_data, indent=2))
+            trigger_file.write_text(json.dumps(trigger_data, indent=2, ensure_ascii=False), encoding='utf-8')
             
             # Verify file was written successfully
             if not trigger_file.exists():
@@ -741,7 +741,7 @@ class ReviewGateServer:
             except FileNotFoundError:
                 # File may have been consumed by the extension already - this is OK
                 logger.info(f"✅ Trigger file was consumed immediately by extension: {trigger_file}")
-                file_size = len(json.dumps(trigger_data, indent=2))
+                file_size = len(json.dumps(trigger_data, indent=2, ensure_ascii=False).encode('utf-8'))
             
             # Force file system sync with retry
             for attempt in range(3):
@@ -809,7 +809,7 @@ class ReviewGateServer:
                     "mcp_integration": True,
                     "immediate_activation": True
                 }
-                backup_trigger.write_text(json.dumps(backup_data, indent=2))
+                backup_trigger.write_text(json.dumps(backup_data, indent=2, ensure_ascii=False), encoding='utf-8')
             
             logger.info("🔄 Backup trigger files created for reliability")
             
@@ -919,7 +919,7 @@ class ReviewGateServer:
                     
                     for trigger_file in speech_triggers:
                         try:
-                            with open(trigger_file, 'r') as f:
+                            with open(trigger_file, 'r', encoding='utf-8') as f:
                                 trigger_data = json.load(f)
                             
                             if trigger_data.get('data', {}).get('tool') == 'speech_to_text':
@@ -1004,8 +1004,8 @@ class ReviewGateServer:
             }
             
             response_file = get_temp_path(f"review_gate_speech_response_{trigger_id}.json")
-            with open(response_file, 'w') as f:
-                json.dump(response_data, f, indent=2)
+            with open(response_file, 'w', encoding='utf-8') as f:
+                json.dump(response_data, f, indent=2, ensure_ascii=False)
             
             logger.info(f"📝 Speech response written: {response_file}")
             
