@@ -20,24 +20,42 @@ echo -e "${BLUE}🚀 Review Gate V2 - One-Click Installation${NC}"
 echo -e "${BLUE}===========================================${NC}"
 echo ""
 
-# Check if running on macOS
-if [[ "$OSTYPE" != "darwin"* ]]; then
-    echo -e "${RED}❌ This script is designed for macOS only${NC}"
+# Detect operating system
+if [[ "$OSTYPE" == "linux-gnu"* ]]; then
+    OS="linux"
+    PACKAGE_MANAGER="apt-get"
+    INSTALL_CMD="sudo $PACKAGE_MANAGER install -y"
+elif [[ "$OSTYPE" == "darwin"* ]]; then
+    OS="macos"
+    PACKAGE_MANAGER="brew"
+    INSTALL_CMD="$PACKAGE_MANAGER install"
+else
+    echo -e "${YELLOW}⚠️ Unsupported operating system: $OSTYPE${NC}"
+    echo -e "${YELLOW}💡 This script is designed for Linux and macOS${NC}"
     exit 1
 fi
 
-# Check if Homebrew is installed
-if ! command -v brew &> /dev/null; then
-    echo -e "${YELLOW}📦 Installing Homebrew...${NC}"
-    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-else
-    echo -e "${GREEN}✅ Homebrew already installed${NC}"
+echo -e "${GREEN}✓ Detected OS: $OS${NC}"
+
+# Only install Homebrew on macOS
+if [[ "$OS" == "macos" ]]; then
+    if ! command -v brew &> /dev/null; then
+        echo -e "${YELLOW}📦 Installing Homebrew (macOS package manager)...${NC}"
+        /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+    else
+        echo -e "${GREEN}✅ Homebrew already installed${NC}"
+    fi
 fi
 
 # Install SoX for speech-to-text
 echo -e "${YELLOW}🎤 Installing SoX for speech-to-text...${NC}"
 if ! command -v sox &> /dev/null; then
-    brew install sox
+    if [[ "$OS" == "linux" ]]; then
+        sudo apt-get update
+        $INSTALL_CMD sox
+    else
+        $INSTALL_CMD sox
+    fi
     echo -e "${GREEN}✅ SoX installed successfully${NC}"
 else
     echo -e "${GREEN}✅ SoX already installed${NC}"
@@ -67,6 +85,16 @@ cp "$SCRIPT_DIR/requirements_simple.txt" "$REVIEW_GATE_DIR/"
 # Create Python virtual environment
 echo -e "${YELLOW}🐍 Creating Python virtual environment...${NC}"
 cd "$REVIEW_GATE_DIR"
+
+# Install python3-venv on Linux if needed
+if [[ "$OS" == "linux" ]]; then
+    if ! dpkg -s python3-venv >/dev/null 2>&1; then
+        echo -e "${YELLOW}📦 Installing Python virtual environment support...${NC}"
+        sudo apt-get update
+        sudo apt-get install -y python3-venv
+    fi
+fi
+
 python3 -m venv venv
 
 # Activate virtual environment and install dependencies
@@ -96,18 +124,21 @@ if [[ -f "$CURSOR_MCP_FILE" ]]; then
         EXISTING_SERVERS="{}"
     else
         # Read existing servers
-        EXISTING_SERVERS=$(python3 -c "
+        EXISTING_SERVERS=$(python3 - "$CURSOR_MCP_FILE" <<'EOF_p1'
 import json
+import sys
+
+cursor_mcp_file = sys.argv[1]
 try:
-    with open('$CURSOR_MCP_FILE', 'r') as f:
+    with open(cursor_mcp_file, 'r') as f:
         config = json.load(f)
     servers = config.get('mcpServers', {})
-    # Remove review-gate-v2 if it exists (we'll add the new one)
     servers.pop('review-gate-v2', None)
     print(json.dumps(servers, indent=2))
-except Exception as e:
+except (IOError, json.JSONDecodeError):
     print('{}')
-" 2>/dev/null)
+EOF_p1
+)
         
         if [[ "$EXISTING_SERVERS" == "{}" ]]; then
             echo -e "${YELLOW}📝 No existing MCP servers found or failed to parse${NC}"
@@ -122,55 +153,85 @@ fi
 
 # Generate merged MCP config
 USERNAME=$(whoami)
-# Write existing servers to temporary file to avoid shell expansion issues
-echo "$EXISTING_SERVERS" > /tmp/existing_mcp_servers.json
+TEMP_MCP_FILE="/tmp/existing_mcp_servers.$$.json"
 
-python3 -c "
+# Write existing servers to temporary file
+echo "$EXISTING_SERVERS" > "$TEMP_MCP_FILE"
+
+# Create and execute a Python script to handle the JSON processing
+if ! python3 - "$TEMP_MCP_FILE" "$REVIEW_GATE_DIR" "$CURSOR_MCP_FILE" <<EOF
 import json
 import os
+import sys
 
-# Read existing servers from file (avoids shell expansion issues)
-with open('/tmp/existing_mcp_servers.json', 'r') as f:
-    existing_servers = json.load(f)
+temp_mcp_file = sys.argv[1]
+review_gate_dir = sys.argv[2]
+cursor_mcp_file = sys.argv[3]
 
-# Add Review Gate V2 server
-existing_servers['review-gate-v2'] = {
-    'command': '$REVIEW_GATE_DIR/venv/bin/python',
-    'args': ['$REVIEW_GATE_DIR/review_gate_v2_mcp.py'],
-    'env': {
-        'PYTHONPATH': '$REVIEW_GATE_DIR',
-        'PYTHONUNBUFFERED': '1',
-        'REVIEW_GATE_MODE': 'cursor_integration'
+try:
+    # Ensure the parent directory for the MCP file exists
+    os.makedirs(os.path.dirname(cursor_mcp_file), exist_ok=True)
+
+    with open(temp_mcp_file, 'r') as f:
+        try:
+            existing_servers = json.load(f)
+        except (json.JSONDecodeError, FileNotFoundError):
+            existing_servers = {}
+
+    if not isinstance(existing_servers, dict):
+        existing_servers = {}
+
+    existing_servers['review-gate-v2'] = {
+        'command': os.path.join(review_gate_dir, 'venv/bin/python'),
+        'args': [os.path.join(review_gate_dir, 'review_gate_v2_mcp.py')],
+        'env': {
+            'PYTHONPATH': review_gate_dir,
+            'PYTHONUNBUFFERED': '1',
+            'REVIEW_GATE_MODE': 'cursor_integration'
+        }
     }
-}
 
-# Create final config
-config = {'mcpServers': existing_servers}
+    config = {'mcpServers': existing_servers}
 
-# Write to file
-with open('$CURSOR_MCP_FILE', 'w') as f:
-    json.dump(config, f, indent=2)
+    with open(cursor_mcp_file, 'w') as f:
+        json.dump(config, f, indent=2)
 
-print('MCP configuration updated successfully')
+    print('MCP configuration updated successfully')
 
-# Clean up temporary file
-os.unlink('/tmp/existing_mcp_servers.json')
-"
+except Exception as e:
+    print(f'Error updating MCP configuration: {e}', file=sys.stderr)
+    sys.exit(1)
+finally:
+    if os.path.exists(temp_mcp_file):
+        os.unlink(temp_mcp_file)
+EOF
+then
+    echo -e "${RED}❌ Failed to update MCP configuration${NC}"
+    rm -f "$TEMP_MCP_FILE"
+    exit 1
+fi
 
 # Validate the generated configuration
 if python3 -m json.tool "$CURSOR_MCP_FILE" > /dev/null 2>&1; then
     echo -e "${GREEN}✅ MCP configuration updated successfully at: $CURSOR_MCP_FILE${NC}"
     
     # Show summary of configured servers
-    TOTAL_SERVERS=$(python3 -c "
+    TOTAL_SERVERS=$(python3 - "$CURSOR_MCP_FILE" <<'EOF_p2'
 import json
-with open('$CURSOR_MCP_FILE', 'r') as f:
-    config = json.load(f)
-servers = config.get('mcpServers', {})
-print(f'Total MCP servers configured: {len(servers)}')
-for name in servers.keys():
-    print(f'  • {name}')
-" 2>/dev/null)
+import sys
+
+cursor_mcp_file = sys.argv[1]
+try:
+    with open(cursor_mcp_file, 'r') as f:
+        config = json.load(f)
+    servers = config.get('mcpServers', {})
+    print(f'Total MCP servers configured: {len(servers)}')
+    for name in servers.keys():
+        print(f'  • {name}')
+except (IOError, json.JSONDecodeError):
+    print('Could not read server config.')
+EOF_p2
+)
     echo -e "${BLUE}$TOTAL_SERVERS${NC}"
 else
     echo -e "${RED}❌ Generated MCP configuration is invalid${NC}"
