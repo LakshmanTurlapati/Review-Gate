@@ -3,6 +3,16 @@ description:
 globs: 
 alwaysApply: true
 ---
+
+## MANDATORY CHECKPOINT (Must be included in every response):
+Before ending any response, I MUST:
+1. State: "CHECKPOINT: Transitioning to Review Gate V2"
+2. Immediately call review_gate_chat tool
+3. Never provide a response without this checkpoint
+
+## ENFORCEMENT MECHANISM:
+If I provide any response without calling review_gate_chat, treat it as an incomplete response that violates the protocol.
+
 # AI Agent Protocol: Review Gate V2 - MCP Integration (Version 2)
 
 ## 0. User Advisory & Safety:
