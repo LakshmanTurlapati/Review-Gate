@@ -34,46 +34,33 @@ if (-not $isAdmin) {
     Write-ColorOutput "💡 Some features may require manual installation" "Yellow"
 }
 
-# Check if Chocolatey is installed, if not install it
-Write-ColorOutput "📦 Checking for Chocolatey package manager..." "Yellow"
-if (-not (Get-Command choco -ErrorAction SilentlyContinue)) {
-    if ($isAdmin) {
-        Write-ColorOutput "📦 Installing Chocolatey..." "Yellow"
-        try {
-            Set-ExecutionPolicy Bypass -Scope Process -Force
-            [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
-            Invoke-Expression ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
-            Write-ColorOutput "✅ Chocolatey installed successfully" "Green"
-        } catch {
-            Write-ColorOutput "❌ Failed to install Chocolatey automatically" "Red"
-            Write-ColorOutput "💡 Please install Chocolatey manually from https://chocolatey.org/install" "Yellow"
-            Write-ColorOutput "💡 Then run this script again" "Yellow"
-            exit 1
-        }
-    } else {
-        Write-ColorOutput "❌ Chocolatey not found and admin privileges required for installation" "Red"
-        Write-ColorOutput "💡 Please install Chocolatey manually: https://chocolatey.org/install" "Yellow"
-        Write-ColorOutput "💡 Or run this script as Administrator" "Yellow"
+# Check if Scoop is installed, if not install it
+Write-ColorOutput "📦 Checking for Scoop package manager..." "Yellow"
+if (-not (Get-Command scoop -ErrorAction SilentlyContinue)) {
+    Write-ColorOutput "📦 Installing Scoop..." "Yellow"
+    try {
+        Set-ExecutionPolicy RemoteSigned -Scope CurrentUser -Force
+        Invoke-Expression (New-Object System.Net.WebClient).DownloadString('https://get.scoop.sh')
+        Write-ColorOutput "✅ Scoop installed successfully" "Green"
+    } catch {
+        Write-ColorOutput "❌ Failed to install Scoop automatically" "Red"
+        Write-ColorOutput "💡 Please install Scoop manually from https://scoop.sh" "Yellow"
+        Write-ColorOutput "💡 Then run this script again" "Yellow"
         exit 1
     }
 } else {
-    Write-ColorOutput "✅ Chocolatey already installed" "Green"
+    Write-ColorOutput "✅ Scoop already installed" "Green"
 }
 
 # Install SoX for speech-to-text
 Write-ColorOutput "🎤 Installing SoX for speech-to-text..." "Yellow"
 if (-not (Get-Command sox -ErrorAction SilentlyContinue)) {
-    if ($isAdmin) {
-        try {
-            choco install sox -y
-            Write-ColorOutput "✅ SoX installed successfully" "Green"
-        } catch {
-            Write-ColorOutput "⚠️ Failed to install SoX via Chocolatey" "Yellow"
-            Write-ColorOutput "💡 Please install SoX manually from http://sox.sourceforge.net/" "Yellow"
-        }
-    } else {
-        Write-ColorOutput "⚠️ Admin privileges required to install SoX" "Yellow"
-        Write-ColorOutput "💡 Please install SoX manually or run as Administrator" "Yellow"
+    try {
+        scoop install sox
+        Write-ColorOutput "✅ SoX installed successfully" "Green"
+    } catch {
+        Write-ColorOutput "⚠️ Failed to install SoX via Scoop" "Yellow"
+        Write-ColorOutput "💡 Please install SoX manually from http://sox.sourceforge.net/" "Yellow"
     }
 } else {
     Write-ColorOutput "✅ SoX already installed" "Green"
@@ -83,13 +70,33 @@ if (-not (Get-Command sox -ErrorAction SilentlyContinue)) {
 Write-ColorOutput "🐍 Checking Python installation..." "Yellow"
 if (-not (Get-Command python -ErrorAction SilentlyContinue) -and -not (Get-Command python3 -ErrorAction SilentlyContinue)) {
     Write-ColorOutput "❌ Python 3 is required but not installed" "Red"
-    Write-ColorOutput "💡 Please install Python 3 from https://python.org or Microsoft Store" "Yellow"
-    Write-ColorOutput "💡 Then run this script again" "Yellow"
-    exit 1
+    Write-ColorOutput "💡 Would you like to install Python 3 using Scoop? (y/n)" "Yellow"
+    $userInput = Read-Host
+    if ($userInput -eq "y") {
+        Write-ColorOutput "📦 Installing Python 3 using Scoop..." "Yellow"
+        try {
+            scoop install python
+            Write-ColorOutput "✅ Python 3 installed successfully using Scoop" "Green"
+        } catch {
+            Write-ColorOutput "❌ Failed to install Python 3 via Scoop" "Red"
+            Write-ColorOutput "💡 Please install Python 3 manually from https://python.org or Microsoft Store" "Yellow"
+            Write-ColorOutput "💡 Then run this script again" "Yellow"
+            exit 1
+        }
+    } else {
+        Write-ColorOutput "💡 Please install Python 3 from https://python.org or Microsoft Store" "Yellow"
+        Write-ColorOutput "💡 Then run this script again" "Yellow"
+        exit 1
+    }
 } else {
     $pythonCmd = if (Get-Command python -ErrorAction SilentlyContinue) { "python" } else { "python3" }
-    $pythonVersion = & $pythonCmd --version
-    Write-ColorOutput "✅ Python found: $pythonVersion" "Green"
+    $testOutput = & $pythonCmd -c "print('hello world')"
+    if ($testOutput -eq "hello world") {
+        Write-ColorOutput "✅ Python found and working correctly" "Green"
+    } else {
+        Write-ColorOutput "❌ Python is installed but not working correctly" "Red"
+        exit 1
+    }
 }
 
 # Create global Cursor extensions directory
@@ -121,6 +128,16 @@ if (Test-Path $requirementsSrc) {
 # Create Python virtual environment
 Write-ColorOutput "🐍 Creating Python virtual environment..." "Yellow"
 Set-Location $ReviewGateDir
+
+# Check if venv module is available
+if (-not (Get-Command python -ErrorAction SilentlyContinue | Where-Object { $_.Source -like "*venv*" })) {
+    Write-ColorOutput "⚠️ venv module not found. Installing venv..." "Yellow"
+    & $pythonCmd -m ensurepip
+    & $pythonCmd -m pip install --upgrade pip
+    & $pythonCmd -m pip install virtualenv
+}
+
+# Create virtual environment
 & $pythonCmd -m venv venv
 
 # Activate virtual environment and install dependencies
