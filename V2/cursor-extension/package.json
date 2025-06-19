@@ -2,7 +2,7 @@
   "name": "review-gate-v2",
   "displayName": "Review Gate V2 ゲート",
   "description": "Advanced Review Gate system with MCP integration for Cursor IDE",
-  "version": "2.6.4",
+  "version": "2.7.0",
   "author": "Lakshman Turlapati",
   "publisher": "LakshmanTurlapati",
   "icon": "icon.png",

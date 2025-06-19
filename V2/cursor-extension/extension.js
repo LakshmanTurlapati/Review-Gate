@@ -467,6 +467,15 @@ function openReviewGatePopup(context, options = {}) {
                     logUserInput('User clicked image upload button', 'IMAGE_UPLOAD_CLICK', currentTriggerId);
                     handleImageUpload(currentTriggerId);
                     break;
+                case 'logPastedImage':
+                    logUserInput(`Image pasted from clipboard: ${webviewMessage.fileName} (${webviewMessage.size} bytes, ${webviewMessage.mimeType})`, 'IMAGE_PASTED', currentTriggerId);
+                    break;
+                case 'logDragDropImage':
+                    logUserInput(`Image dropped from drag and drop: ${webviewMessage.fileName} (${webviewMessage.size} bytes, ${webviewMessage.mimeType})`, 'IMAGE_DROPPED', currentTriggerId);
+                    break;
+                case 'logImageRemoved':
+                    logUserInput(`Image removed: ${webviewMessage.imageId}`, 'IMAGE_REMOVED', currentTriggerId);
+                    break;
                 case 'startRecording':
                     logUserInput('User started speech recording', 'SPEECH_START', currentTriggerId);
                     startNodeRecording(currentTriggerId);
@@ -786,6 +795,11 @@ function getReviewGateHTML(title = "Review Gate", mcpIntegration = false) {
             cursor: not-allowed;
         }
         
+        .message-input.paste-highlight {
+            box-shadow: 0 0 0 2px rgba(0, 123, 255, 0.4) !important;
+            transition: box-shadow 0.2s ease;
+        }
+        
         .attach-button {
             background: none;
             border: none;
@@ -874,6 +888,79 @@ function getReviewGateHTML(title = "Review Gate", mcpIntegration = false) {
             opacity: 0.6;
             margin-left: 4px;
         }
+        
+        /* Drag and drop styling */
+        body.drag-over {
+            background: rgba(0, 123, 255, 0.05);
+        }
+        
+        body.drag-over::before {
+            content: '📋 Drop images here to attach them';
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: var(--vscode-badge-background);
+            color: var(--vscode-badge-foreground);
+            padding: 16px 24px;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 500;
+            z-index: 1000;
+            pointer-events: none;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+        }
+        
+        /* Image preview styling */
+        .image-preview {
+            position: relative;
+        }
+        
+        .image-container {
+            position: relative;
+        }
+        
+        .image-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+        }
+        
+        .image-filename {
+            font-size: 12px;
+            font-weight: 500;
+            opacity: 0.9;
+            flex: 1;
+            margin-right: 8px;
+            word-break: break-all;
+        }
+        
+        .remove-image-btn {
+            background: rgba(255, 59, 48, 0.1);
+            border: 1px solid rgba(255, 59, 48, 0.3);
+            color: #ff3b30;
+            border-radius: 50%;
+            width: 20px;
+            height: 20px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 10px;
+            transition: all 0.2s ease;
+            flex-shrink: 0;
+        }
+        
+        .remove-image-btn:hover {
+            background: rgba(255, 59, 48, 0.2);
+            border-color: rgba(255, 59, 48, 0.5);
+            transform: scale(1.1);
+        }
+        
+        .remove-image-btn:active {
+            transform: scale(0.95);
+        }
     </style>
 </head>
 <body>
@@ -901,7 +988,7 @@ function getReviewGateHTML(title = "Review Gate", mcpIntegration = false) {
         <div class="input-container" id="inputContainer">
             <div class="input-wrapper">
                 <i id="micIcon" class="fas fa-microphone mic-icon active" title="Click to speak"></i>
-                <textarea id="messageInput" class="message-input" placeholder="${mcpIntegration ? 'Cursor Agent is waiting for your response...' : 'Type your review or feedback...'}" rows="1"></textarea>
+                <textarea id="messageInput" class="message-input" placeholder="${mcpIntegration ? 'Cursor Agent is waiting for your response... (Paste images with Ctrl+V)' : 'Type your review or feedback... (Paste images with Ctrl+V)'}" rows="1"></textarea>
                 <button id="attachButton" class="attach-button" title="Upload image">
                     <i class="fas fa-image"></i>
                 </button>
@@ -942,7 +1029,7 @@ function getReviewGateHTML(title = "Review Gate", mcpIntegration = false) {
                 messageInput.disabled = false;
                 sendButton.disabled = false;
                 attachButton.disabled = false;
-                messageInput.placeholder = mcpIntegration ? 'Cursor Agent is waiting for your response...' : 'Type your review or feedback...';
+                messageInput.placeholder = mcpIntegration ? 'Cursor Agent is waiting for your response... (Paste images with Ctrl+V)' : 'Type your review or feedback... (Paste images with Ctrl+V)';
             } else {
                 statusIndicator.classList.remove('active');
                 mcpStatus.textContent = 'MCP Inactive';
@@ -1028,21 +1115,210 @@ function getReviewGateHTML(title = "Review Gate", mcpIntegration = false) {
         }
         
         function handleImageUploaded(imageData) {
-            // Add image to attachments
+            // Add image to attachments with unique ID
+            const imageId = 'img_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+            imageData.id = imageId;
             attachedImages.push(imageData);
             
-            // Show image preview in messages
+            // Show image preview in messages with remove button
             const imagePreview = document.createElement('div');
-            imagePreview.className = 'message system';
+            imagePreview.className = 'message system image-preview';
+            imagePreview.setAttribute('data-image-id', imageId);
             imagePreview.innerHTML = \`
-                <div class="message-bubble">
-                    <img src="\${imageData.dataUrl}" style="max-width: 200px; max-height: 200px; border-radius: 8px;" alt="Uploaded image">
-                    <div style="margin-top: 8px; font-size: 12px; opacity: 0.7;">Image ready to send (\${imageData.fileName})</div>
+                <div class="message-bubble image-container">
+                    <div class="image-header">
+                        <span class="image-filename">\${imageData.fileName}</span>
+                        <button class="remove-image-btn" onclick="removeImage('\${imageId}')" title="Remove image">
+                            <i class="fas fa-times"></i>
+                        </button>
+                    </div>
+                    <img src="\${imageData.dataUrl}" style="max-width: 200px; max-height: 200px; border-radius: 8px; margin-top: 8px;" alt="Uploaded image">
+                    <div style="margin-top: 8px; font-size: 12px; opacity: 0.7;">Image ready to send (\${(imageData.size / 1024).toFixed(1)} KB)</div>
                 </div>
                 <div class="message-time">\${new Date().toLocaleTimeString()}</div>
             \`;
             messagesContainer.appendChild(imagePreview);
             messagesContainer.scrollTop = messagesContainer.scrollHeight;
+            
+            updateImageCounter();
+        }
+        
+        // Remove image function
+        function removeImage(imageId) {
+            // Remove from attachments array
+            attachedImages = attachedImages.filter(img => img.id !== imageId);
+            
+            // Remove from DOM
+            const imagePreview = document.querySelector(\`[data-image-id="\${imageId}"]\`);
+            if (imagePreview) {
+                imagePreview.remove();
+            }
+            
+            updateImageCounter();
+            
+            // Log removal
+            console.log(\`🗑️ Image removed: \${imageId}\`);
+            vscode.postMessage({
+                command: 'logImageRemoved',
+                imageId: imageId
+            });
+        }
+        
+        // Update image counter in input placeholder
+        function updateImageCounter() {
+            const count = attachedImages.length;
+            const baseText = mcpIntegration ? 'Cursor Agent is waiting for your response' : 'Type your review or feedback';
+            const pasteHint = '(Paste images with Ctrl+V)';
+            
+            if (count > 0) {
+                messageInput.placeholder = \`\${baseText}... \${count} image(s) attached \${pasteHint}\`;
+            } else {
+                messageInput.placeholder = \`\${baseText}... \${pasteHint}\`;
+            }
+        }
+        
+        // Handle paste events for images with debounce to prevent duplicates
+        let lastPasteTime = 0;
+        function handlePaste(e) {
+            const now = Date.now();
+            // Prevent duplicate pastes within 500ms
+            if (now - lastPasteTime < 500) {
+                return;
+            }
+            
+            const clipboardData = e.clipboardData || window.clipboardData;
+            if (!clipboardData) return;
+            
+            const items = clipboardData.items;
+            if (!items) return;
+            
+            // Look for image items in clipboard
+            for (let i = 0; i < items.length; i++) {
+                const item = items[i];
+                
+                if (item.type.indexOf('image') !== -1) {
+                    e.preventDefault(); // Prevent default paste behavior for images
+                    lastPasteTime = now; // Update last paste time
+                    
+                    const file = item.getAsFile();
+                    if (file) {
+                        processPastedImage(file);
+                    }
+                    break;
+                }
+            }
+        }
+        
+        // Process pasted image file
+        function processPastedImage(file) {
+            const reader = new FileReader();
+            
+            reader.onload = function(e) {
+                const dataUrl = e.target.result;
+                const base64Data = dataUrl.split(',')[1];
+                
+                // Generate a filename with timestamp
+                const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+                const extension = file.type.split('/')[1] || 'png';
+                const fileName = \`pasted-image-\${timestamp}.\${extension}\`;
+                
+                const imageData = {
+                    fileName: fileName,
+                    filePath: 'clipboard', // Indicate this came from clipboard
+                    mimeType: file.type,
+                    base64Data: base64Data,
+                    dataUrl: dataUrl,
+                    size: file.size,
+                    source: 'paste' // Mark as pasted image
+                };
+                
+                console.log(\`📋 Image pasted: \${fileName} (\${file.size} bytes)\`);
+                
+                // Log the pasted image for MCP integration
+                vscode.postMessage({
+                    command: 'logPastedImage',
+                    fileName: fileName,
+                    size: file.size,
+                    mimeType: file.type
+                });
+                
+                // Add to attachments and show preview
+                handleImageUploaded(imageData);
+            };
+            
+            reader.onerror = function() {
+                console.error('Error reading pasted image');
+                addMessage('❌ Error processing pasted image', 'system', null, true);
+            };
+            
+            reader.readAsDataURL(file);
+        }
+        
+        // Drag and drop handlers
+        let dragCounter = 0;
+        
+        function handleDragEnter(e) {
+            e.preventDefault();
+            dragCounter++;
+            if (hasImageFiles(e.dataTransfer)) {
+                document.body.classList.add('drag-over');
+                messageInput.classList.add('paste-highlight');
+            }
+        }
+        
+        function handleDragLeave(e) {
+            e.preventDefault();
+            dragCounter--;
+            if (dragCounter <= 0) {
+                document.body.classList.remove('drag-over');
+                messageInput.classList.remove('paste-highlight');
+                dragCounter = 0;
+            }
+        }
+        
+        function handleDragOver(e) {
+            e.preventDefault();
+            if (hasImageFiles(e.dataTransfer)) {
+                e.dataTransfer.dropEffect = 'copy';
+            }
+        }
+        
+        function handleDrop(e) {
+            e.preventDefault();
+            dragCounter = 0;
+            document.body.classList.remove('drag-over');
+            messageInput.classList.remove('paste-highlight');
+            
+            const files = e.dataTransfer.files;
+            if (files && files.length > 0) {
+                // Process files with a small delay to prevent conflicts with paste events
+                setTimeout(() => {
+                    for (let i = 0; i < files.length; i++) {
+                        const file = files[i];
+                        if (file.type.startsWith('image/')) {
+                            // Log drag and drop action
+                            vscode.postMessage({
+                                command: 'logDragDropImage',
+                                fileName: file.name,
+                                size: file.size,
+                                mimeType: file.type
+                            });
+                            processPastedImage(file);
+                        }
+                    }
+                }, 50);
+            }
+        }
+        
+        function hasImageFiles(dataTransfer) {
+            if (dataTransfer.types) {
+                for (let i = 0; i < dataTransfer.types.length; i++) {
+                    if (dataTransfer.types[i] === 'Files') {
+                        return true; // We'll check for images on drop
+                    }
+                }
+            }
+            return false;
         }
         
         // Hide/show mic icon based on input
@@ -1110,7 +1386,7 @@ function getReviewGateHTML(title = "Review Gate", mcpIntegration = false) {
             isRecording = false; // Ensure recording flag is cleared
             micIcon.className = 'fas fa-microphone mic-icon active';
             micIcon.title = 'Click to speak';
-            messageInput.placeholder = mcpIntegration ? 'Cursor Agent is waiting for your response...' : 'Type your review or feedback...';
+            messageInput.placeholder = mcpIntegration ? 'Cursor Agent is waiting for your response... (Paste images with Ctrl+V)' : 'Type your review or feedback... (Paste images with Ctrl+V)';
             
             // Force visibility based on input state
             if (messageInput.value.trim().length === 0) {
@@ -1136,6 +1412,16 @@ function getReviewGateHTML(title = "Review Gate", mcpIntegration = false) {
                 sendMessage();
             }
         });
+        
+        // Add paste event listener for images
+        messageInput.addEventListener('paste', handlePaste);
+        document.addEventListener('paste', handlePaste);
+        
+        // Add drag and drop support for images
+        document.addEventListener('dragover', handleDragOver);
+        document.addEventListener('drop', handleDrop);
+        document.addEventListener('dragenter', handleDragEnter);
+        document.addEventListener('dragleave', handleDragLeave);
         
         sendButton.addEventListener('click', () => {
             sendMessage();
@@ -1165,7 +1451,7 @@ function getReviewGateHTML(title = "Review Gate", mcpIntegration = false) {
                     addMessage(message.text, message.type || 'system', message.toolData, message.plain || false);
                     if (message.mcpIntegration) {
                         mcpIntegration = true;
-                        messageInput.placeholder = 'Cursor Agent is waiting for your response...';
+                        messageInput.placeholder = 'Cursor Agent is waiting for your response... (Paste images with Ctrl+V)';
                     }
                     break;
                 case 'focus':
@@ -1223,6 +1509,9 @@ function getReviewGateHTML(title = "Review Gate", mcpIntegration = false) {
                 micIcon.style.pointerEvents = 'auto';
             }
         }
+        
+        // Make removeImage globally accessible for onclick handlers
+        window.removeImage = removeImage;
         
         // Initialize
         vscode.postMessage({ command: 'ready' });
