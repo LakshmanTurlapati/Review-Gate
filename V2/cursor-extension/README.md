@@ -48,7 +48,7 @@ A powerful Cursor IDE extension that provides interactive popup dialogs with sup
 - SoX audio system (installed via Homebrew)
 
 ### Extension Installation
-1. Download the `review-gate-v2-2.5.1.vsix` file
+1. Download the `review-gate-v2-2.7.3.vsix` file
 2. Open Cursor IDE
 3. Press `Cmd+Shift+P` to open command palette
 4. Type "Extensions: Install from VSIX"
@@ -169,6 +169,11 @@ MIT License - see LICENSE file for details
 For issues, feature requests, or contributions, please visit the main project repository at https://github.com/LakshmanTurlapati/Review-Gate
 
 ## Version History
+
+### v2.7.3 (Current)
+- Paste images directly from the clipboard into the Review Gate popup
+- Drag-and-drop image upload support for an even faster workflow
+- Ability to remove individual images before sending a message
 
 ### v2.5.1
 - Complete speech-to-text implementation with SoX integration
