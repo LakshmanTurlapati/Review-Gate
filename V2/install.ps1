@@ -262,6 +262,7 @@ Write-Progress-Log "Creating MCP configuration..."
 if (Test-Path $CursorMcpFile) {
     Write-Success-Log "Found existing MCP configuration, will merge servers"
     $hasExistingServers = $true
+}
 else {
     Write-Info-Log "Creating new MCP configuration file"
     $hasExistingServers = $false
