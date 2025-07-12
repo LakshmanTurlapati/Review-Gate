@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { spawn } = require('child_process');
+const crypto = require('crypto');
 
 // Cross-platform temp directory helper
 function getTempPath(filename) {
@@ -394,15 +395,14 @@ function openReviewGatePopup(context, options = {}) {
         specialHandling = null
     } = options;
     
+    // Generate trigger ID if not provided
+    const finalTriggerId = triggerId || crypto.randomUUID();
+    
     // Store trigger ID in current trigger data for use in message handlers
-    console.log(`🔍 DEBUG: openReviewGatePopup triggerId: ${triggerId}`);
+    console.log(`🔍 DEBUG: openReviewGatePopup finalTriggerId: ${finalTriggerId}`);
     console.log(`🔍 DEBUG: openReviewGatePopup toolData:`, toolData);
-    if (triggerId) {
-        currentTriggerData = { ...toolData, trigger_id: triggerId };
-        console.log(`🔍 DEBUG: Set currentTriggerData:`, currentTriggerData);
-    } else {
-        console.log(`🔍 DEBUG: No triggerId provided, currentTriggerData not updated`);
-    }
+    currentTriggerData = { ...toolData, trigger_id: finalTriggerId };
+    console.log(`🔍 DEBUG: Set currentTriggerData:`, currentTriggerData);
 
     // Silent popup opening
 
@@ -453,10 +453,10 @@ function openReviewGatePopup(context, options = {}) {
     // Handle messages from webview
     chatPanel.webview.onDidReceiveMessage(
         webviewMessage => {
-            // Get trigger ID from current trigger data or passed options
-            const currentTriggerId = (currentTriggerData && currentTriggerData.trigger_id) || triggerId;
+            // Get trigger ID from current trigger data or use finalTriggerId
+            const currentTriggerId = (currentTriggerData && currentTriggerData.trigger_id) || finalTriggerId;
             console.log(`🔍 DEBUG: Speech command - currentTriggerData:`, currentTriggerData);
-            console.log(`🔍 DEBUG: Speech command - triggerId:`, triggerId);
+            console.log(`🔍 DEBUG: Speech command - finalTriggerId:`, finalTriggerId);
             console.log(`🔍 DEBUG: Speech command - currentTriggerId:`, currentTriggerId);
             
             switch (webviewMessage.command) {
@@ -513,7 +513,7 @@ function openReviewGatePopup(context, options = {}) {
                             plain: true,
                             toolData: toolData,
                             mcpIntegration: mcpIntegration,
-                            triggerId: triggerId,
+                            triggerId: finalTriggerId,
                             specialHandling: specialHandling
                         });
                     }
@@ -1949,32 +1949,55 @@ async function validateSoxSetup() {
      */
     return new Promise((resolve) => {
         try {
-            // Test if sox command exists
-            const testProcess = spawn('sox', ['--version'], { stdio: 'pipe' });
+            // Test if sox command exists by trying a simple help command
+            const testProcess = spawn('sox', ['--help'], { 
+                stdio: 'pipe',
+                timeout: 10000 // 10 second timeout for the entire process
+            });
             
-            let soxVersion = '';
+            let soxOutput = '';
+            let processEnded = false;
+            
             testProcess.stdout.on('data', (data) => {
-                soxVersion += data.toString();
+                soxOutput += data.toString();
+            });
+            
+            testProcess.stderr.on('data', (data) => {
+                soxOutput += data.toString();
             });
             
             testProcess.on('close', (code) => {
-                if (code !== 0) {
-                    resolve({ success: false, error: 'SoX command not found or failed' });
+                if (processEnded) return; // Prevent multiple resolutions
+                processEnded = true;
+                
+                console.log(`🔍 SoX help command completed with code: ${code}, output length: ${soxOutput.length}`);
+                
+                // SoX help command should return 0 and contain "SoX" in output
+                if (code !== 0 || !soxOutput.includes('SoX')) {
+                    resolve({ success: false, error: `SoX command failed (code: ${code}, output: ${soxOutput.substring(0, 100)})` });
                     return;
                 }
                 
-                console.log(`✅ SoX found: ${soxVersion.trim()}`);
+                console.log(`✅ SoX found and working`);
                 
                 // Test microphone access with a very short recording
                 const testFile = getTempPath(`review_gate_test_${Date.now()}.wav`);
-                const micTestProcess = spawn('sox', ['-d', '-r', '16000', '-c', '1', testFile, 'trim', '0', '0.1'], { stdio: 'pipe' });
+                const micTestProcess = spawn('sox', ['-d', '-r', '16000', '-c', '1', testFile, 'trim', '0', '0.1'], { 
+                    stdio: 'pipe',
+                    timeout: 8000 // 8 second timeout for microphone test
+                });
                 
                 let testError = '';
+                let micProcessEnded = false;
+                
                 micTestProcess.stderr.on('data', (data) => {
                     testError += data.toString();
                 });
                 
                 micTestProcess.on('close', (testCode) => {
+                    if (micProcessEnded) return; // Prevent multiple resolutions
+                    micProcessEnded = true;
+                    
                     // Clean up test file
                     try {
                         if (fs.existsSync(testFile)) {
@@ -2000,26 +2023,42 @@ async function validateSoxSetup() {
                     }
                 });
                 
+                micTestProcess.on('error', (error) => {
+                    if (micProcessEnded) return;
+                    micProcessEnded = true;
+                    resolve({ success: false, error: `Microphone test error: ${error.message}` });
+                });
+                
                 // Timeout for microphone test
                 setTimeout(() => {
+                    if (micProcessEnded) return;
+                    micProcessEnded = true;
                     try {
                         micTestProcess.kill('SIGTERM');
-                        resolve({ success: false, error: 'Microphone test timed out' });
-                    } catch (e) {}
-                }, 3000);
+                        resolve({ success: false, error: 'Microphone test timed out after 8 seconds' });
+                    } catch (e) {
+                        resolve({ success: false, error: 'Microphone test timeout error' });
+                    }
+                }, 8000);
             });
             
             testProcess.on('error', (error) => {
-                resolve({ success: false, error: `SoX not installed: ${error.message}` });
+                if (processEnded) return;
+                processEnded = true;
+                resolve({ success: false, error: `SoX not installed or spawn error: ${error.message}` });
             });
             
-            // Timeout for version check
+            // Timeout for help command check - increased significantly
             setTimeout(() => {
+                if (processEnded) return;
+                processEnded = true;
                 try {
                     testProcess.kill('SIGTERM');
-                    resolve({ success: false, error: 'SoX version check timed out' });
-                } catch (e) {}
-            }, 2000);
+                    resolve({ success: false, error: 'SoX help check timed out after 10 seconds' });
+                } catch (e) {
+                    resolve({ success: false, error: 'SoX help check timeout error' });
+                }
+            }, 10000); // Increased timeout to 10 seconds
             
         } catch (error) {
             resolve({ success: false, error: `SoX validation error: ${error.message}` });
