@@ -486,12 +486,16 @@ function openReviewGatePopup(context, options = {}) {
                     logUserInput(`Image removed: ${webviewMessage.imageId}`, 'IMAGE_REMOVED', currentTriggerId);
                     break;
                 case 'startRecording':
-                    logUserInput('User started speech recording', 'SPEECH_START', currentTriggerId);
-                    startNodeRecording(currentTriggerId);
+                    // Generate a unique trigger ID for each speech request
+                    const speechTriggerId = crypto.randomUUID();
+                    logUserInput('User started speech recording', 'SPEECH_START', speechTriggerId);
+                    startNodeRecording(speechTriggerId);
                     break;
                 case 'stopRecording':
-                    logUserInput('User stopped speech recording', 'SPEECH_STOP', currentTriggerId);
-                    stopNodeRecording(currentTriggerId);
+                    // Use the trigger ID from the current recording
+                    const recordingTriggerId = currentRecording ? currentRecording.triggerId : crypto.randomUUID();
+                    logUserInput('User stopped speech recording', 'SPEECH_STOP', recordingTriggerId);
+                    stopNodeRecording(recordingTriggerId);
                     break;
                 case 'showError':
                     vscode.window.showErrorMessage(webviewMessage.message);
