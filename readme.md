@@ -1,3 +1,5 @@
+[![MSeeP.ai Security Assessment Badge](https://mseep.net/pr/lakshmanturlapati-review-gate-badge.png)](https://mseep.ai/app/lakshmanturlapati-review-gate)
+
 [![3OtOp7R.th.png](https://iili.io/3OtOp7R.th.png)](https://freeimage.host/i/3OtOp7R)
 
 # Review Gate for Cursor IDE
