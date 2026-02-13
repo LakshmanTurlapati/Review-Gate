@@ -53,6 +53,20 @@ def get_temp_path(filename: str) -> str:
         temp_dir = '/tmp'
     return os.path.join(temp_dir, filename)
 
+def get_workspace_id() -> str:
+    """Generate a stable workspace ID from the current working directory.
+    
+    When Cursor spawns an MCP server, it sets CWD to the workspace folder.
+    We hash this to create a unique identifier for workspace-scoped file routing,
+    which prevents multi-window conflicts when multiple Cursor instances are open.
+    """
+    import hashlib
+    workspace_path = os.getcwd()
+    return hashlib.md5(workspace_path.encode()).hexdigest()[:8]
+
+# Workspace ID for this MCP server instance (used in trigger/response file names)
+WORKSPACE_ID = get_workspace_id()
+
 # Configure logging with immediate flush
 log_file_path = get_temp_path('review_gate_v2.log')
 
@@ -248,7 +262,7 @@ class ReviewGateServer:
         context = args.get("context", "")
         mode = args.get("mode", "chat")
         urgent = args.get("urgent", False)
-        timeout = args.get("timeout", 300)  # Default 5 minutes
+        timeout = args.get("timeout", 86400)  # Default 24 hours (effectively indefinite)
         
         logger.info(f"🎯 UNIFIED Review Gate activated - Mode: {mode}")
         logger.info(f"📝 Title: {title}")
@@ -345,9 +359,9 @@ class ReviewGateServer:
             else:
                 logger.warning("⚠️ No extension acknowledgement received - popup may not have opened")
             
-            # Wait for user input from the popup with 5 MINUTE timeout
-            logger.info("⏳ Waiting for user input for up to 5 minutes...")
-            user_input = await self._wait_for_user_input(trigger_id, timeout=300)  # 5 MINUTE timeout
+            # Wait for user input from the popup (24h timeout, effectively indefinite)
+            logger.info("⏳ Waiting for user input (no timeout - stays open until user responds)...")
+            user_input = await self._wait_for_user_input(trigger_id, timeout=86400)  # 24 HOUR timeout
             
             if user_input:
                 # Return user input directly to MCP client
@@ -766,7 +780,10 @@ class ReviewGateServer:
             # Add delay before creating trigger to ensure readiness
             await asyncio.sleep(0.1)  # Wait 100ms before trigger creation
             
-            trigger_file = Path(get_temp_path("review_gate_trigger.json"))
+            # Use workspace-scoped trigger file to prevent multi-window conflicts
+            trigger_file = Path(get_temp_path(f"review_gate_trigger_{WORKSPACE_ID}.json"))
+            # Also write to the generic path for backward compatibility
+            trigger_file_generic = Path(get_temp_path("review_gate_trigger.json"))
             
             trigger_data = {
                 "timestamp": datetime.now().isoformat(),
@@ -774,15 +791,19 @@ class ReviewGateServer:
                 "editor": "cursor",
                 "data": data,
                 "pid": os.getpid(),
+                "workspace_id": WORKSPACE_ID,
+                "workspace_path": os.getcwd(),
                 "active_window": True,
                 "mcp_integration": True,
                 "immediate_activation": True
             }
             
-            logger.info(f"🎯 CREATING trigger file with data: {json.dumps(trigger_data, indent=2)}")
+            logger.info(f"🎯 CREATING trigger file (workspace: {WORKSPACE_ID})")
             
-            # Write trigger file with immediate flush
+            # Write workspace-scoped trigger file (primary)
             trigger_file.write_text(json.dumps(trigger_data, indent=2))
+            # Write generic trigger file (backward compatibility with single-window setups)
+            trigger_file_generic.write_text(json.dumps(trigger_data, indent=2))
             
             # Verify file was written successfully
             if not trigger_file.exists():
@@ -854,7 +875,20 @@ class ReviewGateServer:
     async def _create_backup_triggers(self, data: dict):
         """Create backup trigger files for better reliability"""
         try:
-            # Create multiple backup trigger files
+            # Create workspace-scoped backup trigger files
+            for i in range(3):
+                backup_trigger = Path(get_temp_path(f"review_gate_trigger_{WORKSPACE_ID}_{i}.json"))
+                backup_data = {
+                    "backup_id": i,
+                    "timestamp": datetime.now().isoformat(),
+                    "system": "review-gate-v2",
+                    "data": data,
+                    "workspace_id": WORKSPACE_ID,
+                    "mcp_integration": True,
+                    "immediate_activation": True
+                }
+                backup_trigger.write_text(json.dumps(backup_data, indent=2))
+            # Also write generic backups for backward compatibility
             for i in range(3):
                 backup_trigger = Path(get_temp_path(f"review_gate_trigger_{i}.json"))
                 backup_data = {
@@ -862,6 +896,7 @@ class ReviewGateServer:
                     "timestamp": datetime.now().isoformat(),
                     "system": "review-gate-v2",
                     "data": data,
+                    "workspace_id": WORKSPACE_ID,
                     "mcp_integration": True,
                     "immediate_activation": True
                 }
@@ -1177,6 +1212,7 @@ class ReviewGateServer:
 async def main():
     """Main entry point for Review Gate v2 with immediate activation"""
     logger.info("🎬 STARTING Review Gate v2 MCP Server...")
+    logger.info(f"🏠 Workspace ID: {WORKSPACE_ID} (from CWD: {os.getcwd()})")
     logger.info(f"Python version: {sys.version}")
     logger.info(f"Platform: {sys.platform}")
     logger.info(f"OS name: {os.name}")

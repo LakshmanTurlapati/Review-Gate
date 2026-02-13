@@ -2,6 +2,7 @@ const vscode = require('vscode');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const crypto = require('crypto');
 const { spawn } = require('child_process');
 
 // Cross-platform temp directory helper
@@ -14,16 +15,39 @@ function getTempPath(filename) {
     }
 }
 
-let chatPanel = null;
+/**
+ * Generate a workspace ID matching the MCP server's algorithm.
+ * Uses MD5 hash of workspace folder path (first 8 chars).
+ * This ensures only the correct Cursor window picks up trigger files
+ * when multiple windows are open.
+ */
+function getWorkspaceId() {
+    const folders = vscode.workspace.workspaceFolders;
+    if (folders && folders.length > 0) {
+        const workspacePath = folders[0].uri.fsPath;
+        return crypto.createHash('md5').update(workspacePath).digest('hex').substring(0, 8);
+    }
+    // Fallback: no workspace open, use generic (backward compatible)
+    return null;
+}
+
+// Per-chat panel management: Map<chatId, { panel, triggerData }>
+const chatPanels = new Map();
 let reviewGateWatcher = null;
 let outputChannel = null;
 let mcpStatus = false;
 let statusCheckInterval = null;
 let currentTriggerData = null;
 let currentRecording = null;
+let extensionContext = null; // Store context for persistence
+let workspaceId = null; // Computed on activation
+const processedTriggerIds = new Set(); // Track processed triggers to prevent duplicates
 
 function activate(context) {
     console.log('Review Gate V2 extension is now active in Cursor for MCP integration!');
+    extensionContext = context; // Store for persistence helpers
+    workspaceId = getWorkspaceId();
+    console.log(`Review Gate workspace ID: ${workspaceId || 'none (generic mode)'}`);
     
     // Create output channel for logging
     outputChannel = vscode.window.createOutputChannel('Review Gate V2 ゲート');
@@ -168,33 +192,35 @@ function checkMcpStatus() {
 }
 
 function updateChatPanelStatus() {
-    if (chatPanel) {
-        chatPanel.webview.postMessage({
-            command: 'updateMcpStatus',
-            active: mcpStatus
-        });
+    // Broadcast MCP status to all open panels
+    for (const [, entry] of chatPanels) {
+        if (entry.panel) {
+            entry.panel.webview.postMessage({
+                command: 'updateMcpStatus',
+                active: mcpStatus
+            });
+        }
     }
 }
 
 function startReviewGateIntegration(context) {
     // Silent integration start
     
-    // Watch for Review Gate trigger file
-    const triggerFilePath = getTempPath('review_gate_trigger.json');
-    
-    // Check for existing trigger file first
-    checkTriggerFile(context, triggerFilePath);
-    
-    // Use a more robust polling approach instead of fs.watchFile
-    // fs.watchFile can miss rapid file creation/deletion cycles
+    // Watch for Review Gate trigger files
+    // Prefer workspace-scoped files to prevent multi-window conflicts
     const pollInterval = setInterval(() => {
-        // Check main trigger file
-        checkTriggerFile(context, triggerFilePath);
-        
-        // Check backup trigger files
+        if (workspaceId) {
+            // Primary: workspace-scoped trigger file (only this window picks it up)
+            checkTriggerFile(context, getTempPath(`review_gate_trigger_${workspaceId}.json`));
+            for (let i = 0; i < 3; i++) {
+                checkTriggerFile(context, getTempPath(`review_gate_trigger_${workspaceId}_${i}.json`));
+            }
+        }
+        // Fallback: generic trigger file (backward compat / single-window setups)
+        // Only check if the trigger has a matching workspace_id OR no workspace_id
+        checkTriggerFile(context, getTempPath('review_gate_trigger.json'), true);
         for (let i = 0; i < 3; i++) {
-            const backupTriggerPath = getTempPath(`review_gate_trigger_${i}.json`);
-            checkTriggerFile(context, backupTriggerPath);
+            checkTriggerFile(context, getTempPath(`review_gate_trigger_${i}.json`), true);
         }
     }, 250); // Check every 250ms for better performance
     
@@ -219,7 +245,7 @@ function startReviewGateIntegration(context) {
     vscode.window.showInformationMessage('Review Gate V2 MCP integration ready! Extension is monitoring for Cursor Agent tool calls...');
 }
 
-function checkTriggerFile(context, filePath) {
+function checkTriggerFile(context, filePath, validateWorkspace = false) {
     try {
         if (fs.existsSync(filePath)) {
             const data = fs.readFileSync(filePath, 'utf8');
@@ -234,8 +260,32 @@ function checkTriggerFile(context, filePath) {
                 return;
             }
             
+            // Multi-window routing: when reading generic trigger files,
+            // only process if the workspace_id matches this window (or is absent)
+            if (validateWorkspace && workspaceId && triggerData.workspace_id) {
+                if (triggerData.workspace_id !== workspaceId) {
+                    // This trigger is for a different Cursor window — skip it
+                    return;
+                }
+            }
+            
+            // DEDUP: Skip if this trigger_id was already processed (prevents backup trigger duplicates)
+            const triggerId = triggerData.data && triggerData.data.trigger_id;
+            if (triggerId && processedTriggerIds.has(triggerId)) {
+                // Clean up duplicate trigger file silently
+                try { fs.unlinkSync(filePath); } catch (e) {}
+                return;
+            }
+            
+            // Mark this trigger_id as processed
+            if (triggerId) {
+                processedTriggerIds.add(triggerId);
+                // Evict old trigger IDs after 60 seconds to prevent memory leak
+                setTimeout(() => processedTriggerIds.delete(triggerId), 60000);
+            }
+            
             // Only log essential trigger info
-            console.log(`Review Gate triggered: ${triggerData.data.tool}`);
+            console.log(`Review Gate triggered: ${triggerData.data.tool} (workspace: ${triggerData.workspace_id || 'generic'})`);
             
             // Store current trigger data for response handling
             currentTriggerData = triggerData.data;
@@ -383,6 +433,68 @@ function sendExtensionAcknowledgement(triggerId, toolType) {
     }
 }
 
+// --- Per-chat history persistence helpers ---
+
+function getChatId(toolData, title) {
+    // Use a SINGLE stable chat ID for the entire workspace session.
+    // Previously this derived from toolData.title, but since each MCP call
+    // sends a different title (e.g., "Review Gate - Slack Deployment",
+    // "Review Gate V3 - Mandatory Review"), every call created a new tab.
+    // Fix: One panel per workspace — all Review Gate messages go to the same tab.
+    return 'rg_review_gate_session';
+}
+
+function loadChatHistory(chatId) {
+    if (!extensionContext) return [];
+    try {
+        const history = extensionContext.workspaceState.get('reviewGateHistory_' + chatId, []);
+        return Array.isArray(history) ? history : [];
+    } catch (e) {
+        console.log('Could not load chat history:', e);
+        return [];
+    }
+}
+
+function saveChatHistory(chatId, messages) {
+    if (!extensionContext) return;
+    try {
+        // Keep last 200 messages per chat to avoid unbounded growth
+        const trimmed = messages.slice(-200);
+        extensionContext.workspaceState.update('reviewGateHistory_' + chatId, trimmed);
+    } catch (e) {
+        console.log('Could not save chat history:', e);
+    }
+}
+
+function appendToHistory(chatId, message) {
+    const history = loadChatHistory(chatId);
+    history.push({
+        ...message,
+        timestamp: new Date().toISOString()
+    });
+    saveChatHistory(chatId, history);
+}
+
+// Legacy compatibility: get the most recent panel (for code that still references chatPanel)
+function getActivePanel() {
+    // Return the most recently added panel that still exists
+    let lastPanel = null;
+    for (const [, entry] of chatPanels) {
+        if (entry.panel) lastPanel = entry.panel;
+    }
+    return lastPanel;
+}
+
+// Helper to post a message to the active panel (used by recording, file handling, etc.)
+function postToActivePanel(message) {
+    const panel = getActivePanel();
+    if (panel) {
+        panel.webview.postMessage(message);
+        return true;
+    }
+    return false;
+}
+
 function openReviewGatePopup(context, options = {}) {
     const {
         message = "Welcome to Review Gate V2! Please provide your review or feedback.",
@@ -394,52 +506,66 @@ function openReviewGatePopup(context, options = {}) {
         specialHandling = null
     } = options;
     
+    // Derive chatId — always the same for the whole session
+    const chatId = getChatId(toolData, title);
+    // Stable display title so the tab doesn't rename on every call
+    const displayTitle = "Review Gate";
+    
     // Store trigger ID in current trigger data for use in message handlers
-    console.log(`🔍 DEBUG: openReviewGatePopup triggerId: ${triggerId}`);
-    console.log(`🔍 DEBUG: openReviewGatePopup toolData:`, toolData);
+    console.log(`🔍 DEBUG: openReviewGatePopup triggerId: ${triggerId}, chatId: ${chatId}`);
     if (triggerId) {
         currentTriggerData = { ...toolData, trigger_id: triggerId };
-        console.log(`🔍 DEBUG: Set currentTriggerData:`, currentTriggerData);
-    } else {
-        console.log(`🔍 DEBUG: No triggerId provided, currentTriggerData not updated`);
     }
 
-    // Silent popup opening
-
-    if (chatPanel) {
-        chatPanel.reveal(vscode.ViewColumn.One);
-        // Always use consistent title
-        chatPanel.title = "Review Gate";
+    // Check if a panel already exists for this chatId (reuse same tab)
+    const existing = chatPanels.get(chatId);
+    if (existing && existing.panel) {
+        existing.panel.reveal(vscode.ViewColumn.One);
+        // Keep stable title — don't rename tab on every call
+        existing.triggerData = currentTriggerData;
         
-        // Set MCP status to active when revealing panel for new input
         if (mcpIntegration) {
             setTimeout(() => {
-                chatPanel.webview.postMessage({
+                existing.panel.webview.postMessage({
                     command: 'updateMcpStatus',
                     active: true
                 });
             }, 100);
         }
         
-        // Don't send redundant messages to existing panels
-        // The initial ready handler will show the message if needed
+        // Send the new message directly to the existing panel
+        if (message) {
+            const messageType = mcpIntegration ? 'ai' : 'system';
+            // Persist to history
+            appendToHistory(chatId, { type: messageType, text: message });
+            
+            setTimeout(() => {
+                existing.panel.webview.postMessage({
+                    command: 'addMessage',
+                    text: message,
+                    type: messageType,
+                    plain: false,
+                    toolData: toolData,
+                    mcpIntegration: mcpIntegration,
+                    triggerId: triggerId,
+                    specialHandling: specialHandling
+                });
+            }, 150);
+        }
         
-        // Auto-focus if requested
         if (autoFocus) {
             setTimeout(() => {
-                chatPanel.webview.postMessage({
-                    command: 'focus'
-                });
-            }, 200);
+                existing.panel.webview.postMessage({ command: 'focus' });
+            }, 250);
         }
         
         return;
     }
 
-    // Create webview panel
-    chatPanel = vscode.window.createWebviewPanel(
+    // Create new webview panel for this chat
+    const chatPanel = vscode.window.createWebviewPanel(
         'reviewGateChat',
-        title,
+        displayTitle,
         vscode.ViewColumn.One,
         {
             enableScripts: true,
@@ -447,20 +573,24 @@ function openReviewGatePopup(context, options = {}) {
         }
     );
 
+    // Store in map
+    chatPanels.set(chatId, { panel: chatPanel, triggerData: currentTriggerData, chatId });
+
     // Set the HTML content
-    chatPanel.webview.html = getReviewGateHTML(title, mcpIntegration);
+    chatPanel.webview.html = getReviewGateHTML(displayTitle, mcpIntegration);
 
     // Handle messages from webview
     chatPanel.webview.onDidReceiveMessage(
         webviewMessage => {
-            // Get trigger ID from current trigger data or passed options
-            const currentTriggerId = (currentTriggerData && currentTriggerData.trigger_id) || triggerId;
-            console.log(`🔍 DEBUG: Speech command - currentTriggerData:`, currentTriggerData);
-            console.log(`🔍 DEBUG: Speech command - triggerId:`, triggerId);
-            console.log(`🔍 DEBUG: Speech command - currentTriggerId:`, currentTriggerId);
+            // Get trigger ID from per-chat data or current global
+            const panelEntry = chatPanels.get(chatId);
+            const panelTriggerData = (panelEntry && panelEntry.triggerData) || currentTriggerData;
+            const currentTriggerId = (panelTriggerData && panelTriggerData.trigger_id) || triggerId;
             
             switch (webviewMessage.command) {
                 case 'send':
+                    // Persist user message to history
+                    appendToHistory(chatId, { type: 'user', text: webviewMessage.text });
                     
                     // Log the user input and write response file for MCP integration
                     const eventType = mcpIntegration ? 'MCP_RESPONSE' : 'REVIEW_SUBMITTED';
@@ -498,19 +628,36 @@ function openReviewGatePopup(context, options = {}) {
                     break;
                 case 'ready':
                     // Send initial MCP status
-                    // For MCP integrations, show as active when waiting for input
                     chatPanel.webview.postMessage({
                         command: 'updateMcpStatus',
                         active: mcpIntegration ? true : mcpStatus
                     });
-                    // Only send welcome message for manual opens, not MCP tool calls
-                    // This prevents duplicate messages from repeated tool calls
-                    if (message && !mcpIntegration && !message.includes("I have completed")) {
+                    
+                    // Load and replay persisted history for this chat
+                    const history = loadChatHistory(chatId);
+                    if (history.length > 0) {
+                        history.forEach(msg => {
+                            chatPanel.webview.postMessage({
+                                command: 'addMessage',
+                                text: msg.text,
+                                type: msg.type,
+                                plain: false,
+                                fromHistory: true
+                            });
+                        });
+                    }
+                    
+                    // Show the current AI message (if not already in history)
+                    if (message) {
+                        const messageType = mcpIntegration ? 'ai' : 'system';
+                        // Persist to history
+                        appendToHistory(chatId, { type: messageType, text: message });
+                        
                         chatPanel.webview.postMessage({
                             command: 'addMessage',
                             text: message,
-                            type: 'system',
-                            plain: true,
+                            type: messageType,
+                            plain: false,
                             toolData: toolData,
                             mcpIntegration: mcpIntegration,
                             triggerId: triggerId,
@@ -524,11 +671,11 @@ function openReviewGatePopup(context, options = {}) {
         context.subscriptions
     );
 
-    // Clean up when panel is closed
+    // Clean up when panel is closed (but history persists in workspaceState)
     chatPanel.onDidDispose(
         () => {
-            chatPanel = null;
-            currentTriggerData = null;
+            chatPanels.delete(chatId);
+            // Don't clear currentTriggerData - other panels may still need it
         },
         null,
         context.subscriptions
@@ -537,7 +684,7 @@ function openReviewGatePopup(context, options = {}) {
     // Auto-focus if requested
     if (autoFocus) {
         setTimeout(() => {
-            chatPanel.webview.postMessage({
+            getActivePanel().webview.postMessage({
                 command: 'focus'
             });
         }, 200);
@@ -670,6 +817,19 @@ function getReviewGateHTML(title = "Review Gate", mcpIntegration = false) {
             background: var(--vscode-badge-background);
             color: var(--vscode-badge-foreground);
             border-bottom-left-radius: 6px;
+        }
+        
+        .message.ai .message-bubble {
+            background: var(--vscode-editorInfo-background, rgba(0, 122, 204, 0.1));
+            color: var(--vscode-foreground);
+            border: 1px solid var(--vscode-editorInfo-border, rgba(0, 122, 204, 0.3));
+            border-bottom-left-radius: 6px;
+        }
+        
+        .message.ai::before {
+            content: '🤖';
+            margin-right: 8px;
+            font-size: 16px;
         }
         
         .message.user .message-bubble {
@@ -1627,9 +1787,9 @@ function handleReviewMessage(text, attachments, triggerId, mcpIntegration, speci
             logUserInput(`SHUTDOWN CONFIRMED: ${text}`, 'SHUTDOWN_CONFIRMED', triggerId);
             
             // Send confirmation response
-            if (chatPanel) {
+            if (getActivePanel()) {
                 setTimeout(() => {
-                    chatPanel.webview.postMessage({
+                    getActivePanel().webview.postMessage({
                         command: 'addMessage',
                         text: `🛑 SHUTDOWN CONFIRMED: "${text}"\n\nMCP server shutdown has been approved by user.\n\nCursor Agent will proceed with graceful shutdown.`,
                         type: 'system'
@@ -1637,8 +1797,8 @@ function handleReviewMessage(text, attachments, triggerId, mcpIntegration, speci
                     
                     // Set MCP status to inactive after shutdown confirmation
                     setTimeout(() => {
-                        if (chatPanel) {
-                            chatPanel.webview.postMessage({
+                        if (getActivePanel()) {
+                            getActivePanel().webview.postMessage({
                                 command: 'updateMcpStatus',
                                 active: false
                             });
@@ -1650,9 +1810,9 @@ function handleReviewMessage(text, attachments, triggerId, mcpIntegration, speci
             logUserInput(`SHUTDOWN ALTERNATIVE: ${text}`, 'SHUTDOWN_ALTERNATIVE', triggerId);
             
             // Send alternative instructions response
-            if (chatPanel) {
+            if (getActivePanel()) {
                 setTimeout(() => {
-                    chatPanel.webview.postMessage({
+                    getActivePanel().webview.postMessage({
                         command: 'addMessage',
                         text: `💡 ALTERNATIVE INSTRUCTIONS: "${text}"\n\nYour instructions have been sent to the Cursor Agent instead of shutdown confirmation.\n\nThe Agent will process your alternative request.`,
                         type: 'system'
@@ -1660,8 +1820,8 @@ function handleReviewMessage(text, attachments, triggerId, mcpIntegration, speci
                     
                     // Set MCP status to inactive after alternative instructions
                     setTimeout(() => {
-                        if (chatPanel) {
-                            chatPanel.webview.postMessage({
+                        if (getActivePanel()) {
+                            getActivePanel().webview.postMessage({
                                 command: 'updateMcpStatus',
                                 active: false
                             });
@@ -1674,9 +1834,9 @@ function handleReviewMessage(text, attachments, triggerId, mcpIntegration, speci
         logUserInput(`TEXT FEEDBACK: ${text}`, 'TEXT_FEEDBACK', triggerId);
         
         // Send text feedback response
-        if (chatPanel) {
+        if (getActivePanel()) {
             setTimeout(() => {
-                chatPanel.webview.postMessage({
+                getActivePanel().webview.postMessage({
                     command: 'addMessage',
                     text: `🔄 TEXT INPUT PROCESSED: "${text}"\n\nYour feedback on the ingested text has been sent to the Cursor Agent.\n\nThe Agent will continue processing with your input.`,
                     type: 'system'
@@ -1684,8 +1844,8 @@ function handleReviewMessage(text, attachments, triggerId, mcpIntegration, speci
                 
                 // Set MCP status to inactive after text feedback
                 setTimeout(() => {
-                    if (chatPanel) {
-                        chatPanel.webview.postMessage({
+                    if (getActivePanel()) {
+                        getActivePanel().webview.postMessage({
                             command: 'updateMcpStatus',
                             active: false
                         });
@@ -1699,12 +1859,12 @@ function handleReviewMessage(text, attachments, triggerId, mcpIntegration, speci
         outputChannel.appendLine(`${mcpIntegration ? 'MCP RESPONSE' : 'REVIEW'} SUBMITTED: ${text}`);
         
         // Send standard response back to webview
-        if (chatPanel) {
+        if (getActivePanel()) {
             setTimeout(() => {
                 // Pick a random funny response
                 const randomResponse = funnyResponses[Math.floor(Math.random() * funnyResponses.length)];
                 
-                chatPanel.webview.postMessage({
+                getActivePanel().webview.postMessage({
                     command: 'addMessage',
                     text: randomResponse,
                     type: 'system',
@@ -1713,8 +1873,8 @@ function handleReviewMessage(text, attachments, triggerId, mcpIntegration, speci
                 
                 // Set MCP status to inactive after sending response
                 setTimeout(() => {
-                    if (chatPanel) {
-                        chatPanel.webview.postMessage({
+                    if (getActivePanel()) {
+                        getActivePanel().webview.postMessage({
                             command: 'updateMcpStatus',
                             active: false
                         });
@@ -1742,8 +1902,8 @@ function handleFileAttachment(triggerId) {
             
             logUserInput(`Files selected for review: ${fileNames.join(', ')}`, 'FILE_SELECTED', triggerId);
             
-            if (chatPanel) {
-                chatPanel.webview.postMessage({
+            if (getActivePanel()) {
+                getActivePanel().webview.postMessage({
                     command: 'addMessage',
                     text: `Files attached for review:\n${fileNames.map(name => '• ' + name).join('\n')}\n\nPaths:\n${filePaths.map(fp => '• ' + fp).join('\n')}`,
                     type: 'system'
@@ -1790,8 +1950,8 @@ function handleImageUpload(triggerId) {
                     logUserInput(`Image uploaded: ${fileName}`, 'IMAGE_UPLOADED', triggerId);
                     
                     // Send image data to webview
-                    if (chatPanel) {
-                        chatPanel.webview.postMessage({
+                    if (getActivePanel()) {
+                        getActivePanel().webview.postMessage({
                             command: 'imageUploaded',
                             imageData: imageData
                         });
@@ -1874,8 +2034,8 @@ async function handleSpeechToText(audioData, triggerId, isFilePath = false) {
                     
                     if (result.transcription) {
                         // Send transcription back to webview
-                        if (chatPanel) {
-                            chatPanel.webview.postMessage({
+                        if (getActivePanel()) {
+                            getActivePanel().webview.postMessage({
                                 command: 'speechTranscribed',
                                 transcription: result.transcription
                             });
@@ -1912,8 +2072,8 @@ async function handleSpeechToText(audioData, triggerId, isFilePath = false) {
             waitTime += pollInterval;
             if (waitTime >= maxWaitTime) {
                 console.log('Speech-to-text timeout');
-                if (chatPanel) {
-                    chatPanel.webview.postMessage({
+                if (getActivePanel()) {
+                    getActivePanel().webview.postMessage({
                         command: 'speechTranscribed',
                         transcription: '' // Empty transcription on timeout
                     });
@@ -1933,8 +2093,8 @@ async function handleSpeechToText(audioData, triggerId, isFilePath = false) {
         
     } catch (error) {
         console.log(`Speech-to-text error: ${error.message}`);
-        if (chatPanel) {
-            chatPanel.webview.postMessage({
+        if (getActivePanel()) {
+            getActivePanel().webview.postMessage({
                 command: 'speechTranscribed',
                 transcription: '' // Empty transcription on error
             });
@@ -2032,8 +2192,8 @@ async function startNodeRecording(triggerId) {
         if (currentRecording) {
             console.log('Recording already in progress');
             // Send feedback to webview
-            if (chatPanel) {
-                chatPanel.webview.postMessage({
+            if (getActivePanel()) {
+                getActivePanel().webview.postMessage({
                     command: 'speechTranscribed',
                     transcription: '',
                     error: 'Recording already in progress'
@@ -2047,8 +2207,8 @@ async function startNodeRecording(triggerId) {
         const validation = await validateSoxSetup();
         if (!validation.success) {
             console.log(`❌ SoX validation failed: ${validation.error}`);
-            if (chatPanel) {
-                chatPanel.webview.postMessage({
+            if (getActivePanel()) {
+                getActivePanel().webview.postMessage({
                     command: 'speechTranscribed',
                     transcription: '',
                     error: validation.error
@@ -2085,8 +2245,8 @@ async function startNodeRecording(triggerId) {
         // Handle sox process events
         currentRecording.on('error', (error) => {
             console.log(`❌ SoX process error: ${error.message}`);
-            if (chatPanel) {
-                chatPanel.webview.postMessage({
+            if (getActivePanel()) {
+                getActivePanel().webview.postMessage({
                     command: 'speechTranscribed',
                     transcription: '',
                     error: `Recording failed: ${error.message}`
@@ -2102,8 +2262,8 @@ async function startNodeRecording(triggerId) {
         console.log(`✅ SoX recording started: PID ${currentRecording.pid}, file: ${audioFile}`);
         
         // Send confirmation to webview that recording has started
-        if (chatPanel) {
-            chatPanel.webview.postMessage({
+        if (getActivePanel()) {
+            getActivePanel().webview.postMessage({
                 command: 'recordingStarted',
                 audioFile: audioFile
             });
@@ -2111,8 +2271,8 @@ async function startNodeRecording(triggerId) {
         
     } catch (error) {
         console.log(`❌ Failed to start SoX recording: ${error.message}`);
-        if (chatPanel) {
-            chatPanel.webview.postMessage({
+        if (getActivePanel()) {
+            getActivePanel().webview.postMessage({
                 command: 'speechTranscribed',
                 transcription: '',
                 error: `Recording failed: ${error.message}`
@@ -2126,8 +2286,8 @@ function stopNodeRecording(triggerId) {
     try {
         if (!currentRecording) {
             console.log('No recording in progress');
-            if (chatPanel) {
-                chatPanel.webview.postMessage({
+            if (getActivePanel()) {
+                getActivePanel().webview.postMessage({
                     command: 'speechTranscribed',
                     transcription: '',
                     error: 'No recording in progress'
@@ -2162,8 +2322,8 @@ function stopNodeRecording(triggerId) {
                         handleSpeechToText(audioFile, triggerId, true);
                     } else {
                         console.log('⚠️ Audio file too small, probably no speech detected');
-                        if (chatPanel) {
-                            chatPanel.webview.postMessage({
+                        if (getActivePanel()) {
+                            getActivePanel().webview.postMessage({
                                 command: 'speechTranscribed',
                                 transcription: '',
                                 error: 'No speech detected - try speaking louder or closer to microphone'
@@ -2178,8 +2338,8 @@ function stopNodeRecording(triggerId) {
                     }
                 } else {
                     console.log('❌ Audio file was not created');
-                    if (chatPanel) {
-                        chatPanel.webview.postMessage({
+                    if (getActivePanel()) {
+                        getActivePanel().webview.postMessage({
                             command: 'speechTranscribed',
                             transcription: '',
                             error: 'Recording failed - no audio file created'
@@ -2207,8 +2367,8 @@ function stopNodeRecording(triggerId) {
     } catch (error) {
         console.log(`❌ Failed to stop SoX recording: ${error.message}`);
         currentRecording = null;
-        if (chatPanel) {
-            chatPanel.webview.postMessage({
+        if (getActivePanel()) {
+            getActivePanel().webview.postMessage({
                 command: 'speechTranscribed',
                 transcription: '',
                 error: `Stop recording failed: ${error.message}`
