@@ -12,7 +12,7 @@ This brownfield roadmap hardens the shipped Review Gate V2 loop in the order mos
 
 Decimal phases appear between their surrounding integers in numeric order.
 
-- [ ] **Phase 1: Installation Integrity** - Make cross-platform installation use current assets and preserve existing user configuration.
+- [x] **Phase 1: Installation Integrity** - Make cross-platform installation use current assets and preserve existing user configuration.
 - [ ] **Phase 2: Session Routing Reliability** - Ensure the active Review Gate request owns its trigger, response, and recovery path.
 - [ ] **Phase 3: Scoped IPC Security** - Restrict local IPC and transient storage to authenticated, per-session behavior.
 - [ ] **Phase 4: Automated Hardening Verification** - Add repeatable automated checks across server, extension, and installer flows.
@@ -79,7 +79,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Installation Integrity | 0/TBD | Not started | - |
+| 1. Installation Integrity | 4/4 | Complete | 2026-04-02 |
 | 2. Session Routing Reliability | 0/TBD | Not started | - |
 | 3. Scoped IPC Security | 0/TBD | Not started | - |
 | 4. Automated Hardening Verification | 0/TBD | Not started | - |
