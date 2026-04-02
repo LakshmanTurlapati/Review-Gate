@@ -14,6 +14,8 @@ function Write-Warning-Log { param([string]$Message) Write-Host "WARNING: $Messa
 function Write-Step-Log { param([string]$Message) Write-Host "$Message" -ForegroundColor White }
 function Write-Header-Log { param([string]$Message) Write-Host "$Message" -ForegroundColor Cyan }
 
+$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+
 Write-Header-Log "Review Gate V2 - Windows Uninstallation"
 Write-Header-Log "======================================="
 Write-Host ""
@@ -41,34 +43,54 @@ if (Test-Path $ReviewGateDir) {
 # Remove from MCP configuration
 if (Test-Path $CursorMcpFile) {
     Write-Progress-Log "Removing from MCP configuration..."
-    
+    $HelperScript = Join-Path $ScriptDir "update_mcp_config.py"
+    $PythonCmd = if (Get-Command python -ErrorAction SilentlyContinue) {
+        "python"
+    } elseif (Get-Command python3 -ErrorAction SilentlyContinue) {
+        "python3"
+    } elseif (Get-Command py -ErrorAction SilentlyContinue) {
+        "py"
+    } else {
+        $null
+    }
+    $PythonArgs = @()
+
+    if ($PythonCmd -eq "py") {
+        $PythonArgs = @("-3")
+    }
+
+    if (-not (Test-Path $HelperScript)) {
+        Write-Error-Log "MCP config helper not found: $HelperScript"
+        exit 1
+    }
+
+    if (-not $PythonCmd) {
+        Write-Error-Log "Python 3 is required to update MCP configuration safely"
+        exit 1
+    }
+
     # Backup current config
     $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
     $BackupFile = "$CursorMcpFile.backup_before_uninstall.$timestamp"
     Copy-Item $CursorMcpFile $BackupFile -Force
     Write-Info-Log "Backup created: $BackupFile"
-    
+
     try {
-        $config = Get-Content $CursorMcpFile -Raw | ConvertFrom-Json
-        if ($config.mcpServers -and $config.mcpServers.PSObject.Properties.Name -contains "review-gate-v2") {
-            $config.mcpServers.PSObject.Properties.Remove("review-gate-v2")
-            
-            # If no servers left, create empty config
-            if ($config.mcpServers.PSObject.Properties.Name.Count -eq 0) {
-                $config.mcpServers = @{}
-            }
-            
-            $config | ConvertTo-Json -Depth 10 | Set-Content $CursorMcpFile -Encoding UTF8
-            Write-Success-Log "Removed from MCP configuration"
-            
-            $remainingCount = $config.mcpServers.PSObject.Properties.Name.Count
-            Write-Header-Log "Remaining MCP servers: $remainingCount"
-        } else {
-            Write-Info-Log "Review Gate not found in MCP configuration"
+        # Run update_mcp_config.py remove so unrelated MCP servers remain intact.
+        & $PythonCmd @PythonArgs $HelperScript remove `
+            --config $CursorMcpFile `
+            --server-name review-gate-v2
+
+        if ($LASTEXITCODE -ne 0) {
+            throw "update_mcp_config.py exited with code $LASTEXITCODE"
         }
+
+        Write-Success-Log "Removed from MCP configuration"
     } catch {
-        Write-Error-Log "Failed to update MCP configuration"
-        Write-Info-Log "Please remove manually or restore from backup"
+        Write-Error-Log "Failed to update MCP configuration: $($_.Exception.Message)"
+        Copy-Item $BackupFile $CursorMcpFile -Force
+        Write-Info-Log "Original MCP configuration restored from backup"
+        exit 1
     }
 } else {
     Write-Info-Log "MCP configuration file not found"

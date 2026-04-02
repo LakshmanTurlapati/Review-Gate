@@ -54,21 +54,54 @@ REM Remove MCP configuration
 set "MCP_CONFIG=%USERPROFILE%\.cursor\mcp.json"
 if exist "%MCP_CONFIG%" (
     %log_progress% Updating MCP configuration...%NC%
+    set "HELPER_SCRIPT=%~dp0update_mcp_config.py"
+
+    if not exist "!HELPER_SCRIPT!" (
+        %log_error% MCP config helper not found: !HELPER_SCRIPT!%NC%
+        pause
+        exit /b 1
+    )
+
+    set "PYTHON_CMD="
+    python --version >nul 2>&1
+    if errorlevel 1 (
+        python3 --version >nul 2>&1
+        if errorlevel 1 (
+            py -3 --version >nul 2>&1
+            if errorlevel 1 (
+                %log_error% Python 3 is required to update MCP configuration safely%NC%
+                pause
+                exit /b 1
+            ) else (
+                set "PYTHON_CMD=py -3"
+            )
+        ) else (
+            set "PYTHON_CMD=python3"
+        )
+    ) else (
+        set "PYTHON_CMD=python"
+    )
     
     REM Create backup first
     for /f "tokens=2 delims==" %%a in ('wmic OS Get localdatetime /value') do set "dt=%%a"
     set "timestamp=!dt:~0,4!!dt:~4,2!!dt:~6,2!_!dt:~8,2!!dt:~10,2!!dt:~12,2!"
-    copy "%MCP_CONFIG%" "%MCP_CONFIG%.backup_uninstall.!timestamp!" >nul 2>&1
+    set "BACKUP_FILE=%MCP_CONFIG%.backup_uninstall.!timestamp!"
+    copy "%MCP_CONFIG%" "!BACKUP_FILE!" >nul 2>&1
     
-    REM Simplified approach - create basic empty config if exists
-    if exist "%MCP_CONFIG%" (
-        echo {
-        echo   "mcpServers": {}
-        echo }
-    ) > "%MCP_CONFIG%"
-    
+    REM Run update_mcp_config.py remove so unrelated MCP servers remain intact.
+    !PYTHON_CMD! "!HELPER_SCRIPT!" remove --config "%MCP_CONFIG%" --server-name "review-gate-v2"
+    if errorlevel 1 (
+        %log_error% Failed to update MCP configuration%NC%
+        if exist "!BACKUP_FILE!" (
+            copy "!BACKUP_FILE!" "%MCP_CONFIG%" >nul 2>&1
+            %log_info% Original MCP configuration restored from backup%NC%
+        )
+        pause
+        exit /b 1
+    )
+
     %log_success% Removed review-gate-v2 from MCP configuration%NC%
-    %log_info% Backup created: %MCP_CONFIG%.backup_uninstall.!timestamp!%NC%
+    %log_info% Backup created: !BACKUP_FILE!%NC%
 ) else (
     %log_warning% MCP configuration not found%NC%
 )
