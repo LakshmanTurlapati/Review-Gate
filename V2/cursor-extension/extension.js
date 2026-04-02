@@ -21,6 +21,16 @@ const SESSION_FILE_NAMES = {
     speechTrigger: 'review_gate_speech_trigger_{triggerId}.json',
     speechResponse: 'review_gate_speech_response_{triggerId}.json'
 };
+const SESSION_STALE_MAX_AGE_MS = 10 * 60 * 1000;
+const STALE_CLEANUP_INTERVAL_MS = 30 * 1000;
+const STALE_FILE_PATTERNS = [
+    /^review_gate_trigger_.+\.json$/,
+    /^review_gate_ack_.+\.json$/,
+    /^review_gate_response_.+\.json$/,
+    /^review_gate_speech_trigger_.+\.json$/,
+    /^review_gate_speech_response_.+\.json$/,
+    /^review_gate_audio_.+\.wav$/
+];
 
 function getSessionFilePath(kind, triggerId) {
     return getTempPath(SESSION_FILE_NAMES[kind].replace('{triggerId}', triggerId));
@@ -68,6 +78,7 @@ let mcpStatus = false;
 let statusCheckInterval = null;
 let activeMcpSession = null;
 let handledTriggerIds = new Set();
+let lastStaleCleanupAt = 0;
 let currentPopupContext = {
     message: null,
     triggerId: null,
@@ -122,6 +133,94 @@ function removeSessionFile(filePath, reason = 'session file cleanup') {
         }
     } catch (error) {
         logMessage(`Failed to remove ${filePath}: ${error.message}`);
+    }
+}
+
+function cleanupStaleSessionFiles(maxAgeMs = SESSION_STALE_MAX_AGE_MS) {
+    const tempDir = getTempPath('');
+    const now = Date.now();
+    let removedCount = 0;
+
+    try {
+        for (const fileName of fs.readdirSync(tempDir)) {
+            if (!STALE_FILE_PATTERNS.some(pattern => pattern.test(fileName))) {
+                continue;
+            }
+
+            const filePath = path.join(tempDir, fileName);
+
+            try {
+                const stats = fs.statSync(filePath);
+                if (!stats.isFile() || now - stats.mtimeMs <= maxAgeMs) {
+                    continue;
+                }
+
+                fs.unlinkSync(filePath);
+                removedCount += 1;
+                logMessage(`Removed stale session file: ${filePath}`);
+            } catch (error) {
+                if (error.code !== 'ENOENT') {
+                    logMessage(`Failed stale cleanup for ${filePath}: ${error.message}`);
+                }
+            }
+        }
+    } catch (error) {
+        if (error.code !== 'ENOENT') {
+            logMessage(`Failed to scan temp directory for stale session files: ${error.message}`);
+        }
+    }
+
+    return removedCount;
+}
+
+function maybeCleanupStaleSessionFiles(maxAgeMs = SESSION_STALE_MAX_AGE_MS) {
+    const now = Date.now();
+    if (now - lastStaleCleanupAt < STALE_CLEANUP_INTERVAL_MS) {
+        return 0;
+    }
+
+    lastStaleCleanupAt = now;
+    return cleanupStaleSessionFiles(maxAgeMs);
+}
+
+function writeSessionResult(triggerId, status, payload = {}) {
+    if (!triggerId) {
+        logMessage(`Cannot write session result without trigger ID (status: ${status})`);
+        return false;
+    }
+
+    const eventType = payload.eventType || (
+        status === 'busy'
+            ? 'SESSION_BUSY'
+            : status === 'cancelled'
+                ? 'SESSION_CANCELLED'
+                : 'SESSION_RESULT'
+    );
+    const responseData = {
+        timestamp: new Date().toISOString(),
+        trigger_id: triggerId,
+        status: status,
+        event_type: eventType,
+        message: payload.message || '',
+        user_input: payload.userInput || '',
+        response: payload.userInput || '',
+        attachments: payload.attachments || [],
+        owner_trigger_id: payload.ownerTriggerId || null,
+        owner_message: payload.ownerMessage || null,
+        tool_type: payload.toolType || null,
+        source: 'review_gate_extension',
+        popup_active: Boolean(activeMcpSession && activeMcpSession.triggerId === triggerId)
+    };
+
+    const responseFile = getSessionFilePath('response', triggerId);
+
+    try {
+        fs.writeFileSync(responseFile, JSON.stringify(responseData, null, 2));
+        logMessage(`Session result written (${status}): ${responseFile}`);
+        return true;
+    } catch (error) {
+        logMessage(`Failed to write session result ${responseFile}: ${error.message}`);
+        return false;
     }
 }
 
@@ -294,6 +393,7 @@ function updateChatPanelStatus() {
 function startReviewGateIntegration(context) {
     // Silent integration start
 
+    cleanupStaleSessionFiles();
     processPendingTriggers(context);
 
     // Use a more robust polling approach instead of fs.watchFile
@@ -324,9 +424,7 @@ function startReviewGateIntegration(context) {
 }
 
 function processPendingTriggers(context) {
-    if (activeMcpSession) {
-        return;
-    }
+    maybeCleanupStaleSessionFiles();
 
     const pendingTriggers = listPendingTriggerFiles();
     for (const filePath of pendingTriggers) {
@@ -363,6 +461,28 @@ function processTriggerFile(context, filePath) {
         if (handledTriggerIds.has(triggerData.data.trigger_id)) {
             removeSessionFile(filePath, 'Removed already-handled trigger file');
             return false;
+        }
+
+        if (activeMcpSession && activeMcpSession.triggerId !== triggerData.data.trigger_id) {
+            const busyMessage = `Review Gate popup is already handling trigger ${activeMcpSession.triggerId}`;
+
+            sendExtensionAcknowledgement(triggerData.data.trigger_id, triggerData.data.tool, {
+                acknowledged: false,
+                status: 'busy',
+                message: busyMessage,
+                ownerTriggerId: activeMcpSession.triggerId
+            });
+            writeSessionResult(triggerData.data.trigger_id, 'busy', {
+                eventType: 'SESSION_BUSY',
+                message: busyMessage,
+                ownerTriggerId: activeMcpSession.triggerId,
+                ownerMessage: activeMcpSession.message || null,
+                toolType: triggerData.data.tool
+            });
+
+            handledTriggerIds.add(triggerData.data.trigger_id);
+            removeSessionFile(filePath, 'Rejected busy trigger file');
+            return true;
         }
 
         console.log(`Review Gate triggered: ${triggerData.data.tool}`);
@@ -484,16 +604,20 @@ function handleReviewGateToolCall(context, toolData) {
     vscode.window.showInformationMessage(`Cursor Agent triggered "${toolDisplayName}" - Review Gate popup opened for your input!`);
 }
 
-function sendExtensionAcknowledgement(triggerId, toolType) {
+function sendExtensionAcknowledgement(triggerId, toolType, options = {}) {
     try {
         const timestamp = new Date().toISOString();
+        const acknowledged = options.acknowledged !== undefined ? Boolean(options.acknowledged) : true;
         const ackData = {
-            acknowledged: true,
+            acknowledged: acknowledged,
+            status: options.status || (acknowledged ? 'acknowledged' : 'error'),
             timestamp: timestamp,
             trigger_id: triggerId,
             tool_type: toolType,
             extension: 'review-gate-v2',
-            popup_activated: true
+            popup_activated: acknowledged,
+            message: options.message || null,
+            owner_trigger_id: options.ownerTriggerId || null
         };
         
         const ackFile = getSessionFilePath('ack', triggerId);
@@ -655,7 +779,19 @@ function openReviewGatePopup(context, options = {}) {
     // Clean up when panel is closed
     chatPanel.onDidDispose(
         () => {
+            const closingSession = activeMcpSession ? { ...activeMcpSession } : null;
             chatPanel = null;
+
+            if (closingSession) {
+                writeSessionResult(closingSession.triggerId, 'cancelled', {
+                    eventType: 'SESSION_CANCELLED',
+                    message: 'Review Gate popup was closed before a response was submitted.',
+                    ownerTriggerId: closingSession.triggerId,
+                    ownerMessage: closingSession.message || null,
+                    toolType: closingSession.toolData ? closingSession.toolData.tool : null
+                });
+            }
+
             activeMcpSession = null;
             setPopupContext();
         },
