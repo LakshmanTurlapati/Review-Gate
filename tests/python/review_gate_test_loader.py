@@ -5,6 +5,8 @@ from __future__ import annotations
 import importlib.util
 import os
 import pathlib
+import shutil
+import tempfile
 import types
 import uuid
 from contextlib import contextmanager
@@ -124,6 +126,19 @@ def disable_speech_monitoring(module) -> Iterator[None]:
 
     with mock.patch.object(module.ReviewGateServer, "_start_speech_monitoring", _disabled_start):
         yield
+
+
+@contextmanager
+def isolated_review_gate_runtime(module, prefix: str = "review-gate-test-runtime") -> Iterator[pathlib.Path]:
+    temp_root = pathlib.Path(tempfile.mkdtemp(prefix=f"{prefix}-")).resolve()
+
+    def _test_get_temp_path(filename: str) -> str:
+        return str(temp_root / filename) if filename else str(temp_root)
+
+    with mock.patch.object(module, "get_temp_path", side_effect=_test_get_temp_path):
+        yield temp_root
+
+    shutil.rmtree(temp_root, ignore_errors=True)
 
 
 def load_review_gate_module():
