@@ -154,10 +154,25 @@ call deactivate
 
 REM Create MCP configuration
 set "CURSOR_MCP_FILE=%USERPROFILE%\.cursor\mcp.json"
+set "HELPER_SCRIPT=%SCRIPT_DIR%\update_mcp_config.py"
+set "MCP_TEMPLATE=%SCRIPT_DIR%\mcp.json"
 %log_progress% Configuring MCP servers...%NC%
 if not exist "%USERPROFILE%\.cursor" mkdir "%USERPROFILE%\.cursor"
 
+if not exist "!HELPER_SCRIPT!" (
+    %log_error% MCP config helper not found: !HELPER_SCRIPT!%NC%
+    pause
+    exit /b 1
+)
+
+if not exist "!MCP_TEMPLATE!" (
+    %log_error% MCP config template not found: !MCP_TEMPLATE!%NC%
+    pause
+    exit /b 1
+)
+
 REM Backup existing MCP configuration if it exists
+set "BACKUP_FILE="
 if exist "!CURSOR_MCP_FILE!" (
     for /f "tokens=2 delims==" %%a in ('wmic OS Get localdatetime /value') do set "dt=%%a"
     set "timestamp=!dt:~0,4!!dt:~4,2!!dt:~6,2!_!dt:~8,2!!dt:~10,2!!dt:~12,2!"
@@ -166,51 +181,31 @@ if exist "!CURSOR_MCP_FILE!" (
     copy "!CURSOR_MCP_FILE!" "!BACKUP_FILE!" >nul
 )
 
-REM Create simplified MCP configuration without complex JSON parsing
-%log_progress% Creating MCP configuration...%NC%
-
-REM Create basic MCP configuration with Review Gate V2
+REM Run update_mcp_config.py merge to preserve existing MCP servers
+%log_progress% Updating MCP configuration...%NC%
 set "PYTHON_PATH=!REVIEW_GATE_DIR!\venv\Scripts\python.exe"
-set "MCP_SCRIPT_PATH=!REVIEW_GATE_DIR!\review_gate_v2_mcp.py"
-
-REM Replace backslashes with forward slashes for JSON
 set "PYTHON_PATH_JSON=!PYTHON_PATH:\=/!"
-set "MCP_SCRIPT_PATH_JSON=!MCP_SCRIPT_PATH:\=/!"
 set "REVIEW_GATE_DIR_JSON=!REVIEW_GATE_DIR:\=/!"
 
-REM Create MCP configuration file directly
-(
-echo {
-echo   "mcpServers": {
-echo     "review-gate-v2": {
-echo       "command": "!PYTHON_PATH_JSON!",
-echo       "args": ["!MCP_SCRIPT_PATH_JSON!"],
-echo       "env": {
-echo         "PYTHONPATH": "!REVIEW_GATE_DIR_JSON!",
-echo         "PYTHONUNBUFFERED": "1",
-echo         "REVIEW_GATE_MODE": "cursor_integration"
-echo       }
-echo     }
-echo   }
-echo }
-) > "!CURSOR_MCP_FILE!"
-
-if exist "!CURSOR_MCP_FILE!" (
-    %log_success% MCP configuration updated successfully%NC%
-    %log_header% Total MCP servers configured: 1%NC%
-    %log_step%   - review-gate-v2 (Review Gate V2)%NC%
-) else (
-    %log_error% Failed to create MCP configuration%NC%
-    if exist "!BACKUP_FILE!" (
-        %log_progress% Restoring from backup...%NC%
-        copy "!BACKUP_FILE!" "!CURSOR_MCP_FILE!" >nul
-        %log_success% Backup restored%NC%
+!PYTHON_CMD! "!HELPER_SCRIPT!" merge --config "!CURSOR_MCP_FILE!" --template "!MCP_TEMPLATE!" --server-name "review-gate-v2" --install-dir "!REVIEW_GATE_DIR_JSON!" --python-cmd "!PYTHON_PATH_JSON!"
+if errorlevel 1 (
+    %log_error% Failed to update MCP configuration%NC%
+    if defined BACKUP_FILE (
+        if exist "!BACKUP_FILE!" (
+            %log_progress% Restoring from backup...%NC%
+            copy "!BACKUP_FILE!" "!CURSOR_MCP_FILE!" >nul
+            %log_success% Backup restored%NC%
+        )
     ) else (
-        %log_error% No backup available, installation failed%NC%
-        pause
-        exit /b 1
+        if exist "!CURSOR_MCP_FILE!" (
+            del /f /q "!CURSOR_MCP_FILE!" >nul 2>&1
+        )
     )
+    pause
+    exit /b 1
 )
+
+%log_success% MCP configuration updated successfully%NC%
 
 
 REM Test MCP server

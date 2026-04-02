@@ -188,18 +188,18 @@ if (Test-Path $venvActivate) {
     
     # Install core dependencies first
     Write-Progress-Log "Installing core dependencies (mcp, pillow)..."
-    & $venvPython -m pip install mcp>=1.9.2 Pillow>=10.0.0 asyncio typing-extensions>=4.14.0
+    & $venvPython -m pip install "mcp>=1.9.2" "Pillow>=10.0.0" "asyncio" "typing-extensions>=4.14.0"
     
     # Install faster-whisper with error handling for Windows
     Write-Progress-Log "Installing faster-whisper for speech-to-text..."
     try {
-        & $venvPython -m pip install faster-whisper>=1.0.0
+        & $venvPython -m pip install "faster-whisper>=1.0.0"
         Write-Success-Log "faster-whisper installed successfully"
     } catch {
         Write-Warning-Log "faster-whisper installation failed - trying alternative approach"
         try {
             # Try CPU-only installation for Windows compatibility
-            & $venvPython -m pip install faster-whisper>=1.0.0 --no-deps
+            & $venvPython -m pip install "faster-whisper>=1.0.0" --no-deps
             & $venvPython -m pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
             Write-Success-Log "faster-whisper installed with CPU-only dependencies"
         } catch {
@@ -225,89 +225,58 @@ $CursorMcpFile = Join-Path $env:USERPROFILE ".cursor\mcp.json"
 Write-Progress-Log "Configuring MCP servers..."
 $CursorDir = Join-Path $env:USERPROFILE ".cursor"
 New-Item -Path $CursorDir -ItemType Directory -Force | Out-Null
+$HelperScript = Join-Path $ScriptDir "update_mcp_config.py"
+$TemplateFile = Join-Path $ScriptDir "mcp.json"
+
+if (-not (Test-Path $HelperScript)) {
+    Write-Error-Log "MCP config helper not found: $HelperScript"
+    exit 1
+}
+
+if (-not (Test-Path $TemplateFile)) {
+    Write-Error-Log "MCP config template not found: $TemplateFile"
+    exit 1
+}
 
 # Backup existing MCP configuration if it exists
+$BackupFile = $null
+$HadExistingMcpConfig = Test-Path $CursorMcpFile
 if (Test-Path $CursorMcpFile) {
     $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
     $BackupFile = "$CursorMcpFile.backup.$timestamp"
     Write-Info-Log "Backing up existing MCP configuration to: $BackupFile"
     Copy-Item $CursorMcpFile $BackupFile -Force
-    
-    # Check if the existing config is valid JSON
-    try {
-        $existingConfig = Get-Content $CursorMcpFile -Raw | ConvertFrom-Json
-        $existingServers = $existingConfig.mcpServers
-        if (-not $existingServers) {
-            $existingServers = @{}
-        }
-        # Remove review-gate-v2 if it exists (we'll add the new one)
-        if ($existingServers.PSObject.Properties.Name -contains "review-gate-v2") {
-            $existingServers.PSObject.Properties.Remove("review-gate-v2")
-        }
-        Write-Success-Log "Found existing MCP servers, merging configurations"
-    } catch {
-        Write-Warning-Log "Existing MCP config has invalid JSON format"
-        Write-Info-Log "Creating new configuration file"
-        $existingServers = @{}
-    }
 } else {
     Write-Info-Log "Creating new MCP configuration file"
-    $existingServers = @{}
 }
 
-# Create simplified MCP configuration
-Write-Progress-Log "Creating MCP configuration..."
-
-# Use simplified approach - create basic config with just Review Gate V2
-if (Test-Path $CursorMcpFile) {
-    Write-Success-Log "Found existing MCP configuration, will merge servers"
-    $hasExistingServers = $true
-else {
-    Write-Info-Log "Creating new MCP configuration file"
-    $hasExistingServers = $false
-}
-
-# Create the configuration using simplified PowerShell approach
-$pythonPath = $venvPython -replace '\\', '/'
-$mcpScriptPath = (Join-Path $ReviewGateDir "review_gate_v2_mcp.py") -replace '\\', '/'
-$reviewGateDirPath = $ReviewGateDir -replace '\\', '/'
-
-$reviewGateServerConfig = @"
-    "review-gate-v2": {
-      "command": "$pythonPath",
-      "args": ["$mcpScriptPath"],
-      "env": {
-        "PYTHONPATH": "$reviewGateDirPath",
-        "PYTHONUNBUFFERED": "1",
-        "REVIEW_GATE_MODE": "cursor_integration"
-      }
-    }
-"@
-
-# Create basic MCP configuration with Review Gate V2
-$mcpConfig = @"
-{
-  "mcpServers": {
-$reviewGateServerConfig
-  }
-}
-"@
-
+# Run update_mcp_config.py merge to preserve existing MCP servers
+Write-Progress-Log "Updating MCP configuration..."
 try {
-    Set-Content -Path $CursorMcpFile -Value $mcpConfig -Encoding UTF8
+    & $pythonCmd $HelperScript merge `
+        --config $CursorMcpFile `
+        --template $TemplateFile `
+        --server-name review-gate-v2 `
+        --install-dir $ReviewGateDir `
+        --python-cmd $venvPython
+
+    if ($LASTEXITCODE -ne 0) {
+        throw "update_mcp_config.py exited with code $LASTEXITCODE"
+    }
+
     Write-Success-Log "MCP configuration updated successfully at: $CursorMcpFile"
-    Write-Header-Log "Total MCP servers configured: 1"
-    Write-Step-Log "  • review-gate-v2 (Review Gate V2)"
 } catch {
-    Write-Error-Log "Failed to create MCP configuration"
+    Write-Error-Log "Failed to update MCP configuration: $($_.Exception.Message)"
     if (Test-Path $BackupFile) {
         Write-Progress-Log "Restoring from backup..."
         Copy-Item $BackupFile $CursorMcpFile -Force
         Write-Success-Log "Backup restored"
+    } elseif (-not $HadExistingMcpConfig -and (Test-Path $CursorMcpFile)) {
+        Remove-Item $CursorMcpFile -Force -ErrorAction SilentlyContinue
     } else {
-        Write-Error-Log "No backup available, installation failed"
-        exit 1
+        Write-Error-Log "No backup available for MCP configuration restore"
     }
+    exit 1
 }
 
 # Test MCP server
