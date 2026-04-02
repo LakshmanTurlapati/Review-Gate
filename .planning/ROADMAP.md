@@ -14,7 +14,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 - [x] **Phase 1: Installation Integrity** - Make cross-platform installation use current assets and preserve existing user configuration.
 - [x] **Phase 2: Session Routing Reliability** - Ensure the active Review Gate request owns its trigger, response, and recovery path.
-- [ ] **Phase 3: Scoped IPC Security** - Restrict local IPC and transient storage to authenticated, per-session behavior.
+- [x] **Phase 3: Scoped IPC Security** - Restrict local IPC and transient storage to authenticated, per-session behavior.
 - [ ] **Phase 4: Automated Hardening Verification** - Add repeatable automated checks across server, extension, and installer flows.
 - [ ] **Phase 5: Canonical Release Surface** - Make shipped artifacts and docs match one supported runtime path.
 
@@ -57,7 +57,7 @@ Plans:
 - [x] 03-01-PLAN.md - Move active IPC, attachment, and speech artifacts into Review Gate-owned per-session runtime directories with whole-session cleanup.
 - [x] 03-02-PLAN.md - Require authenticated envelope validation, atomic JSON writes, and redacted status or log surfaces for the active IPC path.
 - [x] 03-03-PLAN.md - Harden the popup webview with local assets, strict CSP, and DOM-safe rendering paths.
-- [ ] 03-04-PLAN.md - Close the verification blockers by redacting residual diagnostics and requiring live server-backed proof before the extension accepts a new MCP trigger.
+- [x] 03-04-PLAN.md - Close the verification blockers by redacting residual diagnostics and requiring live server-backed proof before the extension accepts a new MCP trigger.
 **UI hint**: yes
 
 ### Phase 4: Automated Hardening Verification
@@ -89,6 +89,6 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5
 |-------|----------------|--------|-----------|
 | 1. Installation Integrity | 4/4 | Complete | 2026-04-02 |
 | 2. Session Routing Reliability | 2/2 | Complete | 2026-04-02 |
-| 3. Scoped IPC Security | 1/3 | In Progress | - |
+| 3. Scoped IPC Security | 4/4 | Complete | 2026-04-02 |
 | 4. Automated Hardening Verification | 0/TBD | Not started | - |
 | 5. Canonical Release Surface | 0/TBD | Not started | - |

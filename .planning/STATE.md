@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: verifying
-stopped_at: Completed 03-03-PLAN.md
-last_updated: "2026-04-02T21:02:55.116Z"
+stopped_at: Completed 03-04-PLAN.md
+last_updated: "2026-04-02T21:21:14.469Z"
 last_activity: 2026-04-02
 progress:
   total_phases: 5
   completed_phases: 3
-  total_plans: 9
-  completed_plans: 9
+  total_plans: 10
+  completed_plans: 10
   percent: 78
 ---
 
@@ -26,7 +26,7 @@ See: .planning/PROJECT.md (updated 2026-04-02)
 ## Current Position
 
 Phase: 3 of 5 (Scoped IPC Security)
-Plan: 3 of 3 (03-02 next)
+Plan: 4 of 4 (03-04 complete)
 Status: Phase complete — ready for verification
 Last activity: 2026-04-02
 
@@ -36,9 +36,9 @@ Progress: [████████░░] 78%
 
 **Velocity:**
 
-- Total plans completed: 7
-- Average duration: 4.1 min
-- Total execution time: 0.5 hours
+- Total plans completed: 10
+- Average duration: 5.5 min
+- Total execution time: 0.9 hours
 
 **By Phase:**
 
@@ -46,11 +46,11 @@ Progress: [████████░░] 78%
 |-------|-------|-------|----------|
 | 01 | 4 | 10 min | 2.5 min |
 | 02 | 2 | 14 min | 7.0 min |
-| 03 | 1 | 5 min | 5.0 min |
+| 03 | 4 | 31 min | 7.75 min |
 
 **Recent Trend:**
 
-- Last 5 plans: 01-03, 01-04, 02-01, 02-02, 03-01
+- Last 5 plans: 02-02, 03-01, 03-02, 03-03, 03-04
 - Trend: Active
 
 *Updated after each plan completion*
@@ -63,6 +63,7 @@ Progress: [████████░░] 78%
 | Phase 03 P01 | 5min | 3 tasks | 2 files |
 | Phase 03 P02 | 6 min | 3 tasks | 2 files |
 | Phase 03 P03 | 10 min | 2 tasks | 1 files |
+| Phase 03 P04 | 10 min | 2 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -88,6 +89,9 @@ Recent decisions affecting current work:
 - [Phase 03]: Cursor extension liveness now reads review_gate_status.json heartbeat metadata instead of raw temp-log mtimes.
 - [Phase 03]: Kept the popup in the existing single-file extension structure and hardened it in place to minimize release risk.
 - [Phase 03]: Serialized popup config into the nonce-allowed script and applied dynamic values through DOM-safe APIs instead of raw HTML interpolation.
+- [Phase 03]: Kept the Phase 2/03-02 session envelope contract intact and added proof only to the initial trigger so busy, cancel, timeout, and response handling did not need a new transport.
+- [Phase 03]: Bound trigger acceptance to both a runtime-secret HMAC and the live review_gate_status.json pid/server_state so stale trigger files are rejected before the popup claims MCP ownership.
+- [Phase 03]: Normalized remaining diagnostics down to trigger ids, counts, and status metadata instead of removing operational logging entirely.
 
 ### Pending Todos
 
@@ -96,12 +100,11 @@ None yet.
 ### Blockers/Concerns
 
 - No automated regression harness exists yet for the Python server, Cursor extension, or installer matrix.
-- Phase 3 still needs authenticated IPC envelope validation in `03-02-PLAN.md` and popup asset or DOM hardening in `03-03-PLAN.md`.
 - Phase 01 still has pending native macOS and Windows smoke tests captured in `01-HUMAN-UAT.md`.
 - Phase 02 still has pending live Cursor popup checks captured in `02-HUMAN-UAT.md`.
 
 ## Session Continuity
 
-Last session: 2026-04-02T21:02:55.114Z
-Stopped at: Completed 03-03-PLAN.md
+Last session: 2026-04-02T21:21:14.463Z
+Stopped at: Completed 03-04-PLAN.md
 Resume file: None
