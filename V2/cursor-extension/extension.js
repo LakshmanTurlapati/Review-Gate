@@ -66,8 +66,110 @@ let reviewGateWatcher = null;
 let outputChannel = null;
 let mcpStatus = false;
 let statusCheckInterval = null;
-let currentTriggerData = null;
+let activeMcpSession = null;
+let handledTriggerIds = new Set();
+let currentPopupContext = {
+    message: null,
+    triggerId: null,
+    mcpIntegration: false,
+    specialHandling: null,
+    toolData: null
+};
 let currentRecording = null;
+
+function setPopupContext(nextContext = {}) {
+    currentPopupContext = {
+        message: nextContext.message || null,
+        triggerId: nextContext.triggerId || null,
+        mcpIntegration: Boolean(nextContext.mcpIntegration),
+        specialHandling: nextContext.specialHandling || null,
+        toolData: nextContext.toolData || null
+    };
+}
+
+function getPopupContext() {
+    if (activeMcpSession) {
+        return {
+            message: activeMcpSession.message || null,
+            triggerId: activeMcpSession.triggerId,
+            mcpIntegration: true,
+            specialHandling: activeMcpSession.specialHandling || null,
+            toolData: activeMcpSession.toolData || null
+        };
+    }
+
+    return { ...currentPopupContext };
+}
+
+function clearActiveMcpSession(triggerId = null) {
+    if (!activeMcpSession) {
+        return;
+    }
+
+    if (triggerId && activeMcpSession.triggerId !== triggerId) {
+        return;
+    }
+
+    activeMcpSession = null;
+    setPopupContext();
+}
+
+function removeSessionFile(filePath, reason = 'session file cleanup') {
+    try {
+        if (fs.existsSync(filePath)) {
+            fs.unlinkSync(filePath);
+            logMessage(`${reason}: ${filePath}`);
+        }
+    } catch (error) {
+        logMessage(`Failed to remove ${filePath}: ${error.message}`);
+    }
+}
+
+function writeSessionResponse(triggerId, inputText, attachments = [], eventType = 'MCP_RESPONSE') {
+    if (!triggerId) {
+        logMessage('Cannot write MCP response without trigger ID');
+        return false;
+    }
+
+    const responseData = {
+        timestamp: new Date().toISOString(),
+        trigger_id: triggerId,
+        user_input: inputText,
+        response: inputText,
+        message: inputText,
+        attachments: attachments,
+        event_type: eventType,
+        source: 'review_gate_extension'
+    };
+
+    const responseFile = getSessionFilePath('response', triggerId);
+
+    try {
+        fs.writeFileSync(responseFile, JSON.stringify(responseData, null, 2));
+        logMessage(`MCP response written: ${responseFile}`);
+        return true;
+    } catch (error) {
+        logMessage(`Failed to write response file ${responseFile}: ${error.message}`);
+        return false;
+    }
+}
+
+function postPopupPrompt(message, sessionContext) {
+    if (!chatPanel || !message || message.includes('I have completed')) {
+        return;
+    }
+
+    chatPanel.webview.postMessage({
+        command: 'addMessage',
+        text: message,
+        type: 'system',
+        plain: true,
+        toolData: sessionContext.toolData || null,
+        mcpIntegration: sessionContext.mcpIntegration,
+        triggerId: sessionContext.triggerId,
+        specialHandling: sessionContext.specialHandling || null
+    });
+}
 
 function activate(context) {
     console.log('Review Gate V2 extension is now active in Cursor for MCP integration!');
@@ -122,30 +224,6 @@ function logUserInput(inputText, eventType = 'MESSAGE', triggerId = null, attach
     try {
         const logFile = getTempPath('review_gate_user_inputs.log');
         fs.appendFileSync(logFile, `${logMsg}\n`);
-        
-        // Write response file for MCP server integration if we have a trigger ID
-        if (triggerId && eventType === 'MCP_RESPONSE') {
-            const responseData = {
-                timestamp: timestamp,
-                trigger_id: triggerId,
-                user_input: inputText,
-                response: inputText,  // Also provide as 'response' field
-                message: inputText,   // Also provide as 'message' field
-                attachments: attachments,  // Include image attachments
-                event_type: eventType,
-                source: 'review_gate_extension'
-            };
-            
-            const responseJson = JSON.stringify(responseData, null, 2);
-
-            const responseFile = getSessionFilePath('response', triggerId);
-            try {
-                fs.writeFileSync(responseFile, responseJson);
-                logMessage(`MCP response written: ${responseFile}`);
-            } catch (writeError) {
-                logMessage(`Failed to write response file ${responseFile}: ${writeError.message}`);
-            }
-        }
         
     } catch (error) {
         logMessage(`Could not write to Review Gate log file: ${error.message}`);
@@ -208,7 +286,7 @@ function updateChatPanelStatus() {
     if (chatPanel) {
         chatPanel.webview.postMessage({
             command: 'updateMcpStatus',
-            active: mcpStatus
+            active: activeMcpSession ? true : mcpStatus
         });
     }
 }
@@ -216,17 +294,12 @@ function updateChatPanelStatus() {
 function startReviewGateIntegration(context) {
     // Silent integration start
 
-    // Check for existing trigger files first
-    listPendingTriggerFiles().forEach(filePath => {
-        checkTriggerFile(context, filePath);
-    });
+    processPendingTriggers(context);
 
     // Use a more robust polling approach instead of fs.watchFile
     // fs.watchFile can miss rapid file creation/deletion cycles
     const pollInterval = setInterval(() => {
-        listPendingTriggerFiles().forEach(filePath => {
-            checkTriggerFile(context, filePath);
-        });
+        processPendingTriggers(context);
     }, 250); // Check every 250ms for better performance
     
     // Store the interval for cleanup
@@ -243,50 +316,67 @@ function startReviewGateIntegration(context) {
     
     // Immediate check on startup
     setTimeout(() => {
-        listPendingTriggerFiles().forEach(filePath => {
-            checkTriggerFile(context, filePath);
-        });
+        processPendingTriggers(context);
     }, 100);
     
     // Show notification that we're ready
     vscode.window.showInformationMessage('Review Gate V2 MCP integration ready! Extension is monitoring for Cursor Agent tool calls...');
 }
 
-function checkTriggerFile(context, filePath) {
-    try {
-        if (fs.existsSync(filePath)) {
-            const data = fs.readFileSync(filePath, 'utf8');
-            const triggerData = JSON.parse(data);
-            
-            // Check if this is for Cursor and Review Gate
-            if (triggerData.editor && triggerData.editor !== 'cursor') {
-                return;
-            }
-            
-            if (triggerData.system && triggerData.system !== 'review-gate-v2') {
-                return;
-            }
-            
-            // Only log essential trigger info
-            console.log(`Review Gate triggered: ${triggerData.data.tool}`);
-            
-            // Store current trigger data for response handling
-            currentTriggerData = triggerData.data;
-            
-            handleReviewGateToolCall(context, triggerData.data);
-            
-            // Clean up trigger file immediately
-            try {
-                fs.unlinkSync(filePath);
-            } catch (cleanupError) {
-                // Silent cleanup error - only console log
-                console.log(`Could not clean trigger file: ${cleanupError.message}`);
-            }
+function processPendingTriggers(context) {
+    if (activeMcpSession) {
+        return;
+    }
+
+    const pendingTriggers = listPendingTriggerFiles();
+    for (const filePath of pendingTriggers) {
+        if (processTriggerFile(context, filePath)) {
+            break;
         }
+    }
+}
+
+function processTriggerFile(context, filePath) {
+    try {
+        if (!fs.existsSync(filePath)) {
+            return false;
+        }
+
+        const data = fs.readFileSync(filePath, 'utf8');
+        const triggerData = JSON.parse(data);
+
+        if (triggerData.editor && triggerData.editor !== 'cursor') {
+            removeSessionFile(filePath, 'Removed non-Cursor trigger file');
+            return false;
+        }
+
+        if (triggerData.system && triggerData.system !== 'review-gate-v2') {
+            removeSessionFile(filePath, 'Removed non-Review Gate trigger file');
+            return false;
+        }
+
+        if (!triggerData.data || !triggerData.data.trigger_id) {
+            removeSessionFile(filePath, 'Removed malformed trigger file');
+            return false;
+        }
+
+        if (handledTriggerIds.has(triggerData.data.trigger_id)) {
+            removeSessionFile(filePath, 'Removed already-handled trigger file');
+            return false;
+        }
+
+        console.log(`Review Gate triggered: ${triggerData.data.tool}`);
+
+        handleReviewGateToolCall(context, triggerData.data);
+        handledTriggerIds.add(triggerData.data.trigger_id);
+        removeSessionFile(filePath, 'Consumed trigger file');
+        return true;
     } catch (error) {
         if (error.code !== 'ENOENT') { // Don't log file not found errors
             console.log(`Error reading trigger file: ${error.message}`);
+            removeSessionFile(filePath, 'Removed unreadable trigger file');
         }
+        return false;
     }
 }
 
@@ -426,15 +516,25 @@ function openReviewGatePopup(context, options = {}) {
         triggerId = null,
         specialHandling = null
     } = options;
-    
-    // Store trigger ID in current trigger data for use in message handlers
-    console.log(`🔍 DEBUG: openReviewGatePopup triggerId: ${triggerId}`);
-    console.log(`🔍 DEBUG: openReviewGatePopup toolData:`, toolData);
-    if (triggerId) {
-        currentTriggerData = { ...toolData, trigger_id: triggerId };
-        console.log(`🔍 DEBUG: Set currentTriggerData:`, currentTriggerData);
-    } else {
-        console.log(`🔍 DEBUG: No triggerId provided, currentTriggerData not updated`);
+
+    const nextPopupContext = {
+        message: message,
+        triggerId: triggerId,
+        mcpIntegration: mcpIntegration,
+        specialHandling: specialHandling,
+        toolData: toolData
+    };
+
+    if (mcpIntegration && triggerId) {
+        activeMcpSession = {
+            triggerId: triggerId,
+            message: message,
+            specialHandling: specialHandling,
+            toolData: toolData
+        };
+        setPopupContext(nextPopupContext);
+    } else if (!activeMcpSession) {
+        setPopupContext(nextPopupContext);
     }
 
     // Silent popup opening
@@ -443,21 +543,23 @@ function openReviewGatePopup(context, options = {}) {
         chatPanel.reveal(vscode.ViewColumn.One);
         // Always use consistent title
         chatPanel.title = "Review Gate";
-        
-        // Set MCP status to active when revealing panel for new input
-        if (mcpIntegration) {
-            setTimeout(() => {
-                chatPanel.webview.postMessage({
-                    command: 'updateMcpStatus',
-                    active: true
-                });
-            }, 100);
-        }
-        
-        // Don't send redundant messages to existing panels
-        // The initial ready handler will show the message if needed
-        
-        // Auto-focus if requested
+
+        setTimeout(() => {
+            if (!chatPanel) {
+                return;
+            }
+
+            const popupContext = getPopupContext();
+            chatPanel.webview.postMessage({
+                command: 'updateMcpStatus',
+                active: popupContext.mcpIntegration ? true : mcpStatus
+            });
+
+            if (mcpIntegration || !activeMcpSession) {
+                postPopupPrompt(message, popupContext);
+            }
+        }, 100);
+
         if (autoFocus) {
             setTimeout(() => {
                 chatPanel.webview.postMessage({
@@ -465,7 +567,7 @@ function openReviewGatePopup(context, options = {}) {
                 });
             }, 200);
         }
-        
+
         return;
     }
 
@@ -486,20 +588,27 @@ function openReviewGatePopup(context, options = {}) {
     // Handle messages from webview
     chatPanel.webview.onDidReceiveMessage(
         webviewMessage => {
-            // Get trigger ID from current trigger data or passed options
-            const currentTriggerId = (currentTriggerData && currentTriggerData.trigger_id) || triggerId;
-            console.log(`🔍 DEBUG: Speech command - currentTriggerData:`, currentTriggerData);
-            console.log(`🔍 DEBUG: Speech command - triggerId:`, triggerId);
-            console.log(`🔍 DEBUG: Speech command - currentTriggerId:`, currentTriggerId);
+            const popupContext = getPopupContext();
+            const currentTriggerId = popupContext.triggerId;
+            const currentMcpIntegration = popupContext.mcpIntegration;
+            const currentSpecialHandling = popupContext.specialHandling;
             
             switch (webviewMessage.command) {
                 case 'send':
-                    
-                    // Log the user input and write response file for MCP integration
-                    const eventType = mcpIntegration ? 'MCP_RESPONSE' : 'REVIEW_SUBMITTED';
-                    logUserInput(webviewMessage.text, eventType, currentTriggerId, webviewMessage.attachments || []);
-                    
-                    handleReviewMessage(webviewMessage.text, webviewMessage.attachments, currentTriggerId, mcpIntegration, specialHandling);
+                    const attachments = webviewMessage.attachments || [];
+                    const eventType = currentMcpIntegration ? 'MCP_RESPONSE' : 'REVIEW_SUBMITTED';
+                    logUserInput(webviewMessage.text, eventType, currentTriggerId, attachments);
+                    let responseWritten = true;
+
+                    if (currentMcpIntegration && currentTriggerId) {
+                        responseWritten = writeSessionResponse(currentTriggerId, webviewMessage.text, attachments, eventType);
+                    }
+
+                    handleReviewMessage(webviewMessage.text, attachments, currentTriggerId, currentMcpIntegration, currentSpecialHandling);
+
+                    if (currentMcpIntegration && currentTriggerId && responseWritten) {
+                        clearActiveMcpSession(currentTriggerId);
+                    }
                     break;
                 case 'attach':
                     logUserInput('User clicked attachment button', 'ATTACHMENT_CLICK', currentTriggerId);
@@ -530,26 +639,12 @@ function openReviewGatePopup(context, options = {}) {
                     vscode.window.showErrorMessage(webviewMessage.message);
                     break;
                 case 'ready':
-                    // Send initial MCP status
-                    // For MCP integrations, show as active when waiting for input
+                    const readyContext = getPopupContext();
                     chatPanel.webview.postMessage({
                         command: 'updateMcpStatus',
-                        active: mcpIntegration ? true : mcpStatus
+                        active: readyContext.mcpIntegration ? true : mcpStatus
                     });
-                    // Only send welcome message for manual opens, not MCP tool calls
-                    // This prevents duplicate messages from repeated tool calls
-                    if (message && !mcpIntegration && !message.includes("I have completed")) {
-                        chatPanel.webview.postMessage({
-                            command: 'addMessage',
-                            text: message,
-                            type: 'system',
-                            plain: true,
-                            toolData: toolData,
-                            mcpIntegration: mcpIntegration,
-                            triggerId: triggerId,
-                            specialHandling: specialHandling
-                        });
-                    }
+                    postPopupPrompt(readyContext.message, readyContext);
                     break;
             }
         },
@@ -561,7 +656,8 @@ function openReviewGatePopup(context, options = {}) {
     chatPanel.onDidDispose(
         () => {
             chatPanel = null;
-            currentTriggerData = null;
+            activeMcpSession = null;
+            setPopupContext();
         },
         null,
         context.subscriptions
@@ -1673,7 +1769,7 @@ function handleReviewMessage(text, attachments, triggerId, mcpIntegration, speci
                         if (chatPanel) {
                             chatPanel.webview.postMessage({
                                 command: 'updateMcpStatus',
-                                active: false
+                                active: activeMcpSession ? true : false
                             });
                         }
                     }, 1000);
@@ -1696,7 +1792,7 @@ function handleReviewMessage(text, attachments, triggerId, mcpIntegration, speci
                         if (chatPanel) {
                             chatPanel.webview.postMessage({
                                 command: 'updateMcpStatus',
-                                active: false
+                                active: activeMcpSession ? true : false
                             });
                         }
                     }, 1000);
@@ -1720,7 +1816,7 @@ function handleReviewMessage(text, attachments, triggerId, mcpIntegration, speci
                     if (chatPanel) {
                         chatPanel.webview.postMessage({
                             command: 'updateMcpStatus',
-                            active: false
+                            active: activeMcpSession ? true : false
                         });
                     }
                 }, 1000);
@@ -1749,7 +1845,7 @@ function handleReviewMessage(text, attachments, triggerId, mcpIntegration, speci
                     if (chatPanel) {
                         chatPanel.webview.postMessage({
                             command: 'updateMcpStatus',
-                            active: false
+                            active: activeMcpSession ? true : false
                         });
                     }
                 }, 1000);
