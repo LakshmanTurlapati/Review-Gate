@@ -180,6 +180,7 @@ web_modules/
 
 # Output of 'npm pack'
 *.tgz
+V2/cursor-extension/*.vsix
 
 # Yarn Integrity file
 .yarn-integrity
