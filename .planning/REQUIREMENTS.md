@@ -22,7 +22,7 @@
 
 - [x] **SEC-01**: User feedback, attachment metadata, and speech transcripts are stored only in scoped per-session locations and cleaned up after handoff.
 - [x] **SEC-02**: Review Gate rejects unauthenticated or malformed local IPC messages from other local processes.
-- [ ] **SEC-03**: The popup UI loads its assets without requiring external CDNs or unsafe HTML injection patterns.
+- [x] **SEC-03**: The popup UI loads its assets without requiring external CDNs or unsafe HTML injection patterns.
 
 ### Verification and Release
 
@@ -60,7 +60,7 @@
 | SESS-03 | Phase 2 | Complete |
 | SEC-01 | Phase 3 | Complete |
 | SEC-02 | Phase 3 | Complete |
-| SEC-03 | Phase 3 | Pending |
+| SEC-03 | Phase 3 | Complete |
 | QUAL-01 | Phase 4 | Pending |
 | QUAL-02 | Phase 4 | Pending |
 | QUAL-03 | Phase 4 | Pending |
