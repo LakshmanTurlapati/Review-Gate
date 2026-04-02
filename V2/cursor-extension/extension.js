@@ -112,6 +112,109 @@ function getMcpLogPath() {
     return getStatusFilePath();
 }
 
+function isPathWithinRuntimeRoot(candidatePath, runtimeRoot) {
+    const relativePath = path.relative(runtimeRoot, candidatePath);
+    return relativePath === '' || (!relativePath.startsWith('..') && !path.isAbsolute(relativePath));
+}
+
+function assertSafeRuntimePath(targetPath, options = {}) {
+    const runtimeRoot = fs.realpathSync.native(getRuntimeRoot());
+    const normalizedPath = path.resolve(targetPath);
+
+    if (!isPathWithinRuntimeRoot(normalizedPath, runtimeRoot)) {
+        throw new Error(`Runtime path escapes Review Gate root: ${targetPath}`);
+    }
+
+    let chainTarget = normalizedPath;
+    if (options.allowMissing && !fs.existsSync(normalizedPath)) {
+        chainTarget = path.dirname(normalizedPath);
+    }
+
+    let currentPath = chainTarget;
+    while (true) {
+        const stats = fs.lstatSync(currentPath);
+        if (stats.isSymbolicLink()) {
+            throw new Error(`Refusing symlinked runtime path: ${currentPath}`);
+        }
+        if (currentPath === normalizedPath) {
+            if (options.expectFile && !stats.isFile()) {
+                throw new Error(`Refusing non-regular runtime file: ${currentPath}`);
+            }
+            if (options.expectDirectory && !stats.isDirectory()) {
+                throw new Error(`Refusing non-directory runtime path: ${currentPath}`);
+            }
+        }
+        if (currentPath === runtimeRoot) {
+            break;
+        }
+        const parentPath = path.dirname(currentPath);
+        if (parentPath === currentPath) {
+            break;
+        }
+        currentPath = parentPath;
+    }
+
+    const resolvedPath = fs.realpathSync.native(chainTarget);
+    if (!isPathWithinRuntimeRoot(resolvedPath, runtimeRoot)) {
+        throw new Error(`Resolved runtime path escapes Review Gate root: ${targetPath}`);
+    }
+
+    return normalizedPath;
+}
+
+function readJsonFileSafely(filePath) {
+    assertSafeRuntimePath(filePath, { expectFile: true });
+    return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+}
+
+function writeJsonAtomically(filePath, payload) {
+    ensureDirectory(path.dirname(filePath));
+    assertSafeRuntimePath(path.dirname(filePath), { expectDirectory: true });
+
+    try {
+        assertSafeRuntimePath(filePath, { expectFile: true });
+    } catch (error) {
+        if (error.code !== 'ENOENT') {
+            throw error;
+        }
+    }
+
+    const tempPath = path.join(
+        path.dirname(filePath),
+        `.${path.basename(filePath)}.${process.pid}.${Date.now()}.tmp`
+    );
+    const serialized = JSON.stringify(payload, null, 2);
+    let fileDescriptor;
+
+    try {
+        fileDescriptor = fs.openSync(tempPath, 'w', 0o600);
+        fs.writeFileSync(fileDescriptor, serialized, 'utf8');
+        fs.fsyncSync(fileDescriptor);
+    } finally {
+        if (fileDescriptor !== undefined) {
+            fs.closeSync(fileDescriptor);
+        }
+    }
+
+    try {
+        fs.renameSync(tempPath, filePath);
+        try {
+            const directoryDescriptor = fs.openSync(path.dirname(filePath), 'r');
+            try {
+                fs.fsyncSync(directoryDescriptor);
+            } finally {
+                fs.closeSync(directoryDescriptor);
+            }
+        } catch (error) {
+            // Ignore directory fsync failures on platforms that do not support them.
+        }
+    } finally {
+        if (fs.existsSync(tempPath)) {
+            fs.unlinkSync(tempPath);
+        }
+    }
+}
+
 function buildSessionEnvelope(triggerId, sessionContract, source = 'review_gate_extension') {
     const contract = sessionContract || getSessionContract(triggerId);
     if (!contract) {
@@ -239,7 +342,7 @@ function listPendingTriggerFiles() {
 
                 const filePath = path.join(sessionDir, fileName);
                 try {
-                    if (fs.statSync(filePath).isFile()) {
+                    if (fs.lstatSync(filePath).isFile()) {
                         pendingFiles.push(filePath);
                     }
                 } catch (error) {
@@ -388,12 +491,15 @@ function getSessionLastActivity(sessionPath) {
 
 function removeSessionFile(filePath, reason = 'session file cleanup') {
     try {
-        if (fs.existsSync(filePath)) {
-            fs.unlinkSync(filePath);
+        fs.lstatSync(filePath);
+        fs.rmSync(filePath, { force: true });
+        if (!reason.includes('Removed invalid runtime path')) {
             logMessage(`${reason}: ${filePath}`);
         }
     } catch (error) {
-        logMessage(`Failed to remove ${filePath}: ${error.message}`);
+        if (error.code !== 'ENOENT') {
+            logMessage(`Failed to remove ${filePath}: ${error.message}`);
+        }
     }
 }
 
@@ -623,7 +729,7 @@ function writeSessionResult(triggerId, status, payload = {}, sessionContract = n
             source: 'review_gate_extension',
             popup_active: Boolean(activeMcpSession && activeMcpSession.triggerId === triggerId)
         };
-        fs.writeFileSync(responseFile, JSON.stringify(responseData, null, 2));
+        writeJsonAtomically(responseFile, responseData);
         logMessage(`Session result written (${status}): ${responseFile}`);
         return true;
     } catch (error) {
@@ -651,7 +757,7 @@ function writeSessionResponse(triggerId, inputText, attachments = [], eventType 
             event_type: eventType,
             source: 'review_gate_extension'
         };
-        fs.writeFileSync(responseFile, JSON.stringify(responseData, null, 2));
+        writeJsonAtomically(responseFile, responseData);
         logMessage(`MCP response written: ${responseFile}`);
         return true;
     } catch (error) {
@@ -838,12 +944,17 @@ function processTriggerFile(context, filePath) {
             return false;
         }
 
-        const triggerData = validateSessionEnvelope(JSON.parse(fs.readFileSync(filePath, 'utf8')), {
+        const triggerData = validateSessionEnvelope(readJsonFileSafely(filePath), {
             expectedSource: 'review_gate_mcp',
             expectedSystem: 'review-gate-v2',
             expectedEditor: 'cursor',
             requireDataKeys: ['trigger_id', 'tool']
         });
+        const expectedTriggerPath = path.resolve(getExistingSessionFilePath('trigger', triggerData.trigger_id));
+        if (path.resolve(filePath) !== expectedTriggerPath) {
+            removeSessionFile(filePath, 'Removed invalid runtime path trigger file');
+            return false;
+        }
 
         if (handledTriggerIds.has(triggerData.trigger_id)) {
             removeSessionFile(filePath, 'Removed already-handled trigger file');
@@ -1019,7 +1130,7 @@ function sendExtensionAcknowledgement(triggerId, toolType, options = {}, session
         };
         
         const ackFile = getSessionFilePath('ack', triggerId);
-        fs.writeFileSync(ackFile, JSON.stringify(ackData, null, 2));
+        writeJsonAtomically(ackFile, ackData);
         
         // Silent acknowledgement 
         
@@ -2576,7 +2687,7 @@ async function handleSpeechToText(audioData, triggerId, isFilePath = false) {
         };
         
         const triggerFile = getSessionFilePath('speechTrigger', sessionTriggerId);
-        fs.writeFileSync(triggerFile, JSON.stringify(transcriptionRequest, null, 2));
+        writeJsonAtomically(triggerFile, transcriptionRequest);
         
         console.log(`Speech-to-text request sent: ${triggerFile}`);
         
@@ -2595,7 +2706,7 @@ async function handleSpeechToText(audioData, triggerId, isFilePath = false) {
             
             if (fs.existsSync(resultFile)) {
                 try {
-                    const result = validateSessionEnvelope(JSON.parse(fs.readFileSync(resultFile, 'utf8')), {
+                    const result = validateSessionEnvelope(readJsonFileSafely(resultFile), {
                         expectedSource: 'review_gate_whisper',
                         expectedTriggerId: sessionTriggerId,
                         expectedSession: sessionContract

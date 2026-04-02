@@ -16,6 +16,7 @@ import sys
 import logging
 import os
 import shutil
+import stat
 import time
 import uuid
 import glob
@@ -153,6 +154,98 @@ def _session_trigger_id_from_path(kind: str, file_path: Path) -> Optional[str]:
 def _audio_file_matches_trigger(audio_file: str, trigger_id: str) -> bool:
     """Validate that an audio file belongs to the same trigger-scoped speech session."""
     return Path(audio_file).name.startswith(f"review_gate_audio_{trigger_id}_")
+
+
+def _path_within_runtime_root(candidate_path: Path, runtime_root: Path) -> bool:
+    try:
+        candidate_path.relative_to(runtime_root)
+        return True
+    except ValueError:
+        return False
+
+
+def _validate_runtime_path(
+    path: Path,
+    *,
+    expect_file: bool = False,
+    expect_directory: bool = False,
+    allow_missing: bool = False,
+) -> Path:
+    runtime_root = get_runtime_root().resolve()
+    normalized_path = path.resolve(strict=False)
+
+    if not _path_within_runtime_root(normalized_path, runtime_root):
+        raise ValueError(f"Runtime path escapes Review Gate root: {path}")
+
+    chain_target = path
+    if allow_missing and not os.path.lexists(str(path)):
+        chain_target = path.parent
+
+    current_path = chain_target
+    while True:
+        if not os.path.lexists(str(current_path)):
+            if current_path == path and not allow_missing:
+                raise FileNotFoundError(str(path))
+        else:
+            current_stat = current_path.lstat()
+            if stat.S_ISLNK(current_stat.st_mode):
+                raise ValueError(f"Refusing symlinked runtime path: {current_path}")
+            if current_path == path:
+                if expect_file and not stat.S_ISREG(current_stat.st_mode):
+                    raise ValueError(f"Refusing non-regular runtime file: {current_path}")
+                if expect_directory and not stat.S_ISDIR(current_stat.st_mode):
+                    raise ValueError(f"Refusing non-directory runtime path: {current_path}")
+
+        if current_path == runtime_root or current_path == current_path.parent:
+            break
+        current_path = current_path.parent
+
+    resolved_target = chain_target.resolve(strict=True)
+    if not _path_within_runtime_root(resolved_target, runtime_root):
+        raise ValueError(f"Resolved runtime path escapes Review Gate root: {path}")
+
+    return normalized_path
+
+
+def _read_json_file(path: Path) -> Dict[str, Any]:
+    _validate_runtime_path(path, expect_file=True)
+    with path.open("r", encoding="utf-8") as file_handle:
+        return json.load(file_handle)
+
+
+def _write_json_atomically(path: Path, payload: Dict[str, Any]) -> None:
+    _ensure_private_directory(path.parent)
+    _validate_runtime_path(path.parent, expect_directory=True)
+    try:
+        _validate_runtime_path(path, expect_file=True)
+    except FileNotFoundError:
+        pass
+
+    temp_path = path.parent / f".{path.name}.{uuid.uuid4().hex}.tmp"
+    serialized = json.dumps(payload, indent=2)
+
+    try:
+        with temp_path.open("w", encoding="utf-8") as file_handle:
+            file_handle.write(serialized)
+            file_handle.flush()
+            os.fsync(file_handle.fileno())
+
+        os.replace(temp_path, path)
+
+        try:
+            directory_fd = os.open(str(path.parent), os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        except OSError:
+            pass
+    finally:
+        if os.path.lexists(str(temp_path)):
+            try:
+                temp_path.unlink()
+            except OSError:
+                pass
 
 # Configure logging with immediate flush
 log_file_path = str(get_runtime_root() / 'review_gate_v2.log')
@@ -961,7 +1054,7 @@ class ReviewGateServer:
                 if ack_file.exists():
                     try:
                         data = self._validate_session_envelope(
-                            json.loads(ack_file.read_text()),
+                            _read_json_file(ack_file),
                             expected_trigger_id=trigger_id,
                             expected_source="review_gate_extension",
                         )
@@ -1065,101 +1158,88 @@ class ReviewGateServer:
                 for response_file in response_patterns:
                     if response_file.exists():
                         try:
-                            file_content = response_file.read_text().strip()
-                            
-                            # Handle JSON format
-                            if file_content.startswith('{'):
+                            try:
+                                data = self._validate_session_envelope(
+                                    _read_json_file(response_file),
+                                    expected_trigger_id=trigger_id,
+                                    expected_source="review_gate_extension",
+                                )
+                            except json.JSONDecodeError as e:
+                                logger.error(f"❌ JSON decode error in {response_file}: {e}")
+                                self._last_attachments = []
                                 try:
-                                    data = self._validate_session_envelope(
-                                        json.loads(file_content),
-                                        expected_trigger_id=trigger_id,
-                                        expected_source="review_gate_extension",
-                                    )
-                                except json.JSONDecodeError as e:
-                                    logger.error(f"❌ JSON decode error in {response_file}: {e}")
-                                    self._last_attachments = []
-                                    try:
-                                        response_file.unlink()
-                                    except Exception:
-                                        pass
-                                    continue
-                                except ValueError as validation_error:
-                                    logger.warning(
-                                        f"⚠️ Removing invalid response envelope for {trigger_id}: {validation_error}"
-                                    )
-                                    self._clear_last_attachments()
-                                    try:
-                                        response_file.unlink()
-                                    except Exception:
-                                        pass
-                                    continue
+                                    response_file.unlink()
+                                except Exception:
+                                    pass
+                                continue
+                            except ValueError as validation_error:
+                                logger.warning(
+                                    f"⚠️ Removing invalid response envelope for {trigger_id}: {validation_error}"
+                                )
+                                self._clear_last_attachments()
+                                try:
+                                    response_file.unlink()
+                                except Exception:
+                                    pass
+                                continue
 
-                                user_input = data.get("user_input", data.get("response", data.get("message", ""))).strip()
-                                attachments = data.get("attachments", [])
+                            user_input = data.get("user_input", data.get("response", data.get("message", ""))).strip()
+                            attachments = data.get("attachments", [])
+                            
+                            response_trigger_id = data.get("trigger_id", "")
+                            if response_trigger_id and response_trigger_id != trigger_id:
+                                logger.warning(f"⚠️ Removing mismatched response envelope: expected {trigger_id}, got {response_trigger_id}")
+                                self._last_attachments = []
+                                try:
+                                    response_file.unlink()
+                                    logger.info(f"🧹 Removed mismatched response file: {response_file}")
+                                except Exception as cleanup_error:
+                                    logger.warning(f"⚠️ Cleanup error for mismatched response: {cleanup_error}")
+                                continue
+
+                            response_status = str(data.get("status", "")).strip().lower()
+                            event_type = str(data.get("event_type", "")).strip()
+                            response_message = str(data.get("message") or data.get("error") or "").strip()
+
+                            if not response_status and event_type == "SESSION_BUSY":
+                                response_status = "busy"
+                            elif not response_status and event_type == "SESSION_CANCELLED":
+                                response_status = "cancelled"
+
+                            if response_status in {"busy", "cancelled", "error"}:
+                                if not response_message:
+                                    if response_status == "busy":
+                                        response_message = "Review Gate popup is already handling another active session."
+                                    elif response_status == "cancelled":
+                                        response_message = "Review Gate popup was closed before the user responded."
+                                    else:
+                                        response_message = "Review Gate popup reported an error before the user responded."
+
+                                self._set_session_outcome(
+                                    response_status,
+                                    response_message,
+                                    event_type=event_type,
+                                    owner_trigger_id=data.get("owner_trigger_id"),
+                                    source_file=str(response_file)
+                                )
+                                try:
+                                    response_file.unlink()
+                                    logger.info(f"🧹 Response outcome file cleaned up: {response_file}")
+                                except Exception as cleanup_error:
+                                    logger.warning(f"⚠️ Cleanup error for response outcome: {cleanup_error}")
+                                return None
+                            
+                            if attachments:
+                                logger.info(f"📎 Found {len(attachments)} attachments")
+                                self._last_attachments = attachments
+                                attachment_descriptions = []
+                                for att in attachments:
+                                    if att.get('mimeType', '').startswith('image/'):
+                                        attachment_descriptions.append(f"Image: {att.get('fileName', 'unknown')}")
                                 
-                                # Also check if trigger_id matches (if specified)
-                                response_trigger_id = data.get("trigger_id", "")
-                                if response_trigger_id and response_trigger_id != trigger_id:
-                                    logger.warning(f"⚠️ Removing mismatched response envelope: expected {trigger_id}, got {response_trigger_id}")
-                                    self._last_attachments = []
-                                    try:
-                                        response_file.unlink()
-                                        logger.info(f"🧹 Removed mismatched response file: {response_file}")
-                                    except Exception as cleanup_error:
-                                        logger.warning(f"⚠️ Cleanup error for mismatched response: {cleanup_error}")
-                                    continue
-
-                                response_status = str(data.get("status", "")).strip().lower()
-                                event_type = str(data.get("event_type", "")).strip()
-                                response_message = str(data.get("message") or data.get("error") or "").strip()
-
-                                if not response_status and event_type == "SESSION_BUSY":
-                                    response_status = "busy"
-                                elif not response_status and event_type == "SESSION_CANCELLED":
-                                    response_status = "cancelled"
-
-                                if response_status in {"busy", "cancelled", "error"}:
-                                    if not response_message:
-                                        if response_status == "busy":
-                                            response_message = "Review Gate popup is already handling another active session."
-                                        elif response_status == "cancelled":
-                                            response_message = "Review Gate popup was closed before the user responded."
-                                        else:
-                                            response_message = "Review Gate popup reported an error before the user responded."
-
-                                    self._set_session_outcome(
-                                        response_status,
-                                        response_message,
-                                        event_type=event_type,
-                                        owner_trigger_id=data.get("owner_trigger_id"),
-                                        source_file=str(response_file)
-                                    )
-                                    try:
-                                        response_file.unlink()
-                                        logger.info(f"🧹 Response outcome file cleaned up: {response_file}")
-                                    except Exception as cleanup_error:
-                                        logger.warning(f"⚠️ Cleanup error for response outcome: {cleanup_error}")
-                                    return None
-                                
-                                # Process attachments if present
-                                if attachments:
-                                    logger.info(f"📎 Found {len(attachments)} attachments")
-                                    # Store attachments for use in response
-                                    self._last_attachments = attachments
-                                    attachment_descriptions = []
-                                    for att in attachments:
-                                        if att.get('mimeType', '').startswith('image/'):
-                                            attachment_descriptions.append(f"Image: {att.get('fileName', 'unknown')}")
-                                    
-                                    if attachment_descriptions:
-                                        user_input += f"\n\nAttached: {', '.join(attachment_descriptions)}"
-                                else:
-                                    self._clear_last_attachments()
-                                    
-                            # Handle plain text format
+                                if attachment_descriptions:
+                                    user_input += f"\n\nAttached: {', '.join(attachment_descriptions)}"
                             else:
-                                user_input = file_content
-                                attachments = []
                                 self._clear_last_attachments()
                             
                             # Clean up response file immediately
@@ -1226,7 +1306,7 @@ class ReviewGateServer:
             logger.info(f"🎯 CREATING trigger file with data: {json.dumps(trigger_data, indent=2)}")
             
             # Write trigger file with immediate flush
-            trigger_file.write_text(json.dumps(trigger_data, indent=2))
+            _write_json_atomically(trigger_file, trigger_data)
             
             # Verify file was written successfully
             if not trigger_file.exists():
@@ -1419,19 +1499,26 @@ class ReviewGateServer:
                             # Validate file exists and is readable
                             if not os.path.exists(trigger_file):
                                 continue
-                                
-                            with open(trigger_file, 'r', encoding='utf-8') as f:
-                                trigger_data = self._validate_session_envelope(
-                                    json.load(f),
-                                    expected_source="review_gate_extension",
-                                    required_data_keys=("trigger_id", "tool", "audio_file"),
-                                )
+
+                            trigger_data = self._validate_session_envelope(
+                                _read_json_file(trigger_path),
+                                expected_source="review_gate_extension",
+                                required_data_keys=("trigger_id", "tool", "audio_file"),
+                            )
 
                             request_trigger_id = trigger_data.get('data', {}).get('trigger_id')
                             if expected_trigger_id and request_trigger_id and expected_trigger_id != request_trigger_id:
                                 logger.warning(
                                     f"⚠️ Ignoring mismatched speech trigger file {trigger_path.name}: "
                                     f"expected {expected_trigger_id}, got {request_trigger_id}"
+                                )
+                                trigger_path.unlink()
+                                continue
+
+                            expected_trigger_path = _session_file("speech_trigger", request_trigger_id)
+                            if trigger_path.resolve(strict=False) != expected_trigger_path.resolve(strict=False):
+                                logger.warning(
+                                    f"⚠️ Ignoring speech trigger outside the expected session path: {trigger_path.name}"
                                 )
                                 trigger_path.unlink()
                                 continue
@@ -1575,8 +1662,7 @@ class ReviewGateServer:
             }
             
             response_file = _session_file("speech_response", trigger_id)
-            with open(response_file, 'w') as f:
-                json.dump(response_data, f, indent=2)
+            _write_json_atomically(response_file, response_data)
             
             logger.info(f"📝 Speech response written: {response_file}")
             
