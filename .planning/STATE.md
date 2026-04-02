@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Completed 03-01-PLAN.md
-last_updated: "2026-04-02T20:39:41.398Z"
+stopped_at: Completed 03-02-PLAN.md
+last_updated: "2026-04-02T20:54:08.006Z"
 last_activity: 2026-04-02
 progress:
   total_phases: 5
   completed_phases: 2
   total_plans: 9
-  completed_plans: 7
+  completed_plans: 8
   percent: 78
 ---
 
@@ -26,8 +26,8 @@ See: .planning/PROJECT.md (updated 2026-04-02)
 ## Current Position
 
 Phase: 3 of 5 (Scoped IPC Security)
-Plan: 2 of 3 (03-02 next)
-Status: In progress
+Plan: 3 of 3 (03-02 next)
+Status: Ready to execute
 Last activity: 2026-04-02
 
 Progress: [████████░░] 78%
@@ -61,6 +61,7 @@ Progress: [████████░░] 78%
 | Phase 02 P01 | 7min | 3 tasks | 2 files |
 | Phase 02 P02 | 7min | 3 tasks | 2 files |
 | Phase 03 P01 | 5min | 3 tasks | 2 files |
+| Phase 03 P02 | 6 min | 3 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -81,6 +82,9 @@ Recent decisions affecting current work:
 - [Phase 03]: Runtime-owned IPC now lives under review-gate-v2/<user>/sessions/<trigger_id>/ while preserving the Phase 2 filename contract.
 - [Phase 03]: Session teardown now removes whole session directories, with the server owning MCP-session cleanup and the extension owning manual-session and stale-directory cleanup.
 - [Phase 03]: Shared temp user-input audit logging was removed, while MCP liveness checks continue via a runtime-local review_gate_v2.log.
+- [Phase 03]: Session envelopes now require protocol_version plus a per-session session_token across trigger, acknowledgement, response, and speech IPC.
+- [Phase 03]: Active IPC JSON reads now fail closed on symlinks, non-regular files, and paths that resolve outside the Review Gate runtime root.
+- [Phase 03]: Cursor extension liveness now reads review_gate_status.json heartbeat metadata instead of raw temp-log mtimes.
 
 ### Pending Todos
 
@@ -95,6 +99,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-02T20:39:41.395Z
-Stopped at: Completed 03-01-PLAN.md
+Last session: 2026-04-02T20:54:08.004Z
+Stopped at: Completed 03-02-PLAN.md
 Resume file: None
