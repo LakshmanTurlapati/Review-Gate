@@ -135,30 +135,31 @@ if [[ "$OS" == "linux" ]]; then
 fi
 
 python3 -m venv venv
+VENV_PYTHON="$REVIEW_GATE_DIR/venv/bin/python"
 
 # Activate virtual environment and install dependencies
 log_progress "Installing Python dependencies..."
 source venv/bin/activate
-pip install --upgrade pip
+"$VENV_PYTHON" -m pip install --upgrade pip
 
 # Install dependencies with better error handling
 log_progress "Installing core dependencies (mcp, pillow)..."
-pip install mcp>=1.9.2 Pillow>=10.0.0 asyncio typing-extensions>=4.14.0
+"$VENV_PYTHON" -m pip install "mcp>=1.9.2" "Pillow>=10.0.0" "asyncio" "typing-extensions>=4.14.0"
 
 # Install faster-whisper with platform-specific handling
 log_progress "Installing faster-whisper for speech-to-text..."
-if pip install faster-whisper>=1.0.0; then
+if "$VENV_PYTHON" -m pip install "faster-whisper>=1.0.0"; then
     log_success "faster-whisper installed successfully"
 else
     log_warning "faster-whisper installation failed - trying alternative approach"
     # Try installing without CUDA dependencies for CPU-only
-    if pip install faster-whisper>=1.0.0 --no-deps; then
-        pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+    if "$VENV_PYTHON" -m pip install "faster-whisper>=1.0.0" --no-deps; then
+        "$VENV_PYTHON" -m pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
         log_success "faster-whisper installed with CPU-only dependencies"
     else
         log_error "faster-whisper installation failed"
         log_info "Speech-to-text will be disabled"
-        log_info "You can manually install later: pip install faster-whisper"
+        log_info "You can manually install later: \"$VENV_PYTHON\" -m pip install \"faster-whisper>=1.0.0\""
     fi
 fi
 
