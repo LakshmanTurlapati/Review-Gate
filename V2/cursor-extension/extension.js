@@ -2261,23 +2261,10 @@ function getReviewGateHTML(options = {}) {
             }
 
             const imageId = 'img_' + Date.now() + '_' + Math.random().toString(36).slice(2, 11);
-            imageData.id = imageId;
-            attachedImages.push(imageData);
+            const imageRecord = Object.assign({}, imageData, { id: imageId });
+            attachedImages.push(imageRecord);
 
-            const imagePreview = document.createElement('div');
-            imagePreview.className = 'message system image-preview';
-            imagePreview.setAttribute('data-image-id', imageId);
-            imagePreview.innerHTML = [
-                '<div class="message-bubble image-container">',
-                '    <div class="image-header">',
-                '        <span class="image-filename">' + imageData.fileName + '</span>',
-                '        <button class="remove-image-btn button-icon icon-close" onclick="removeImage(\\'' + imageId + '\\')" title="Remove image" aria-label="Remove image" type="button"></button>',
-                '    </div>',
-                '    <img src="' + imageData.dataUrl + '" class="image-preview-image" alt="Uploaded image">',
-                '    <div class="image-meta">Image ready to send (' + formatImageSize(imageData.size) + ' KB)</div>',
-                '</div>',
-                '<div class="message-time">' + new Date().toLocaleTimeString() + '</div>'
-            ].join('');
+            const imagePreview = createImagePreviewNode(imageRecord, imageId);
             messagesContainer.appendChild(imagePreview);
             messagesContainer.scrollTop = messagesContainer.scrollHeight;
             
@@ -2647,9 +2634,6 @@ function getReviewGateHTML(options = {}) {
                 micIcon.style.pointerEvents = 'auto';
             }
         }
-
-        // Make removeImage globally accessible for onclick handlers
-        window.removeImage = removeImage;
         
         // Initialize
         vscode.postMessage({ command: 'ready' });
