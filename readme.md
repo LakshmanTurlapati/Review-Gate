@@ -84,7 +84,7 @@ graph TD
 
 ## Installation
 
-**For the full V2 experience, start with `V2/INSTALLATION.md`.** It documents the current shipped V2 files, including `V2/review-gate-v2-2.7.3.vsix`, `V2/ReviewGateV2.mdc`, and the merge-safe MCP setup.
+**For the full V2 experience, start with `V2/INSTALLATION.md`.** It documents the canonical shipped V2 files, including `V2/review-gate-v2-2.7.3.vsix`, `V2/ReviewGateV2.mdc`, the manifest-backed packaging helper, and the merge-safe MCP setup.
 
 ### V2 Installation (Recommended - MCP Integration)
 
@@ -118,11 +118,25 @@ The installer automatically handles:
 - **Extension**: Cursor extension for the popup interface
 - **Configuration**: MCP integration setup that preserves existing MCP configuration by merging only the `review-gate-v2` entry
 
+#### Maintainer Packaging Contract
+
+If you need to validate or rebuild the shipped artifact, the repo now treats `V2/review-gate-v2-2.7.3.vsix` as the only canonical release file:
+
+```bash
+# From the repo root
+python3 scripts/package_review_gate_vsix.py --check
+
+# From V2/cursor-extension
+npm run package
+```
+
+Both commands read `V2/release-manifest.json`, keep `V2/ReviewGateV2.mdc` as the supported rule file, and target the same canonical VSIX path under `V2/`.
+
 #### Alternative: Manual Extension Installation
 
 If the automatic installer doesn't install the extension properly, you can install it manually:
 
-1. **Download Extension**: Use `V2/review-gate-v2-2.7.3.vsix` as the primary shipped artifact, or `V2/cursor-extension/review-gate-v2-2.7.3.vsix` if you need the fallback build output
+1. **Download Extension**: Use `V2/review-gate-v2-2.7.3.vsix`, the canonical shipped artifact
 2. **Open Cursor**: Launch Cursor IDE
 3. **Extensions Panel**: Press `Cmd/Ctrl+Shift+X` to open Extensions
 4. **Install from VSIX**: Click the `...` menu → "Install from VSIX..."

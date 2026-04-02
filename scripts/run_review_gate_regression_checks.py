@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the shipped Phase 4 regression suites from the repository root."""
+"""Run the shipped Review Gate regression suites from the repository root."""
 
 from __future__ import annotations
 
@@ -48,6 +48,14 @@ def build_suites() -> "OrderedDict[str, dict[str, object]]":
                         "tests/smoke/test_installers.py",
                         "-v",
                     ],
+                    "env": {"PYTHONPATH": TESTS_PYTHON},
+                },
+            ),
+            (
+                "release-surface",
+                {
+                    "description": "Phase 05 canonical release-surface regression suite",
+                    "command": [PYTHON, "-m", "unittest", "tests/python/test_release_surface.py", "-v"],
                     "env": {"PYTHONPATH": TESTS_PYTHON},
                 },
             ),

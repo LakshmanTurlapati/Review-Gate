@@ -2,12 +2,13 @@
 
 ## Overview
 Review Gate V2 is a local MCP (Model Context Protocol) server plus a Cursor extension and a Cursor rule file. This guide covers the current shipped V2 install surface:
-- `V2/review-gate-v2-2.7.3.vsix` - primary shipped VSIX artifact
-- `V2/cursor-extension/review-gate-v2-2.7.3.vsix` - fallback build-output VSIX location
+- `V2/review-gate-v2-2.7.3.vsix` - canonical shipped VSIX artifact
 - `V2/ReviewGateV2.mdc` - current V2 Cursor rule
 - `V2/mcp.json` - sample MCP configuration entry
 
 Use the automated installer when possible. If you install manually, keep any existing Cursor MCP servers and merge only the `review-gate-v2` entry into `mcpServers`.
+
+For maintainers, the release contract lives in `V2/release-manifest.json`. Validate it from the repo root with `python3 scripts/package_review_gate_vsix.py --check`, or package the canonical VSIX from `V2/cursor-extension/` with `npm run package`. Both paths target `V2/review-gate-v2-2.7.3.vsix`.
 
 ## Prerequisites
 
@@ -42,7 +43,7 @@ chmod +x install.sh
 ./install.sh
 ```
 
-The installer uses `V2/review-gate-v2-2.7.3.vsix` first and falls back to `V2/cursor-extension/review-gate-v2-2.7.3.vsix` if needed. Existing `~/.cursor/mcp.json` servers are preserved while `review-gate-v2` is added or updated.
+The installer uses the canonical shipped VSIX `V2/review-gate-v2-2.7.3.vsix`. Existing `~/.cursor/mcp.json` servers are preserved while `review-gate-v2` is added or updated.
 
 ### Windows PowerShell
 ```powershell
@@ -69,7 +70,7 @@ cd Review-Gate\V2
 install.bat
 ```
 
-Like the PowerShell flow, the batch installer keeps other `mcpServers` entries intact and installs the current `2.7.3` VSIX from the shipped `V2/` artifact first.
+Like the PowerShell flow, the batch installer keeps other `mcpServers` entries intact and installs the current `2.7.3` VSIX from the canonical shipped `V2/` artifact.
 
 ## Manual Installation
 
@@ -96,9 +97,7 @@ Copy these files from the downloaded Review-Gate/V2 folder to your installation 
 - `requirements_simple.txt` - Python dependencies
 - `mcp.json` - Sample MCP configuration entry
 - `ReviewGateV2.mdc` - Current Review Gate V2 rule file
-- `review-gate-v2-2.7.3.vsix` - Preferred shipped Cursor extension artifact
-
-If your checkout does not include `V2/review-gate-v2-2.7.3.vsix`, use `V2/cursor-extension/review-gate-v2-2.7.3.vsix` as the fallback build-output artifact instead.
+- `review-gate-v2-2.7.3.vsix` - Canonical shipped Cursor extension artifact
 
 ### Step 3: Set Up Python Environment
 
@@ -217,7 +216,7 @@ Add or update this configuration block (replace paths with your actual paths):
 5. Select `review-gate-v2-2.7.3.vsix`
 6. Restart Cursor when prompted
 
-Use the VSIX copied from `V2/review-gate-v2-2.7.3.vsix` when available. If you only have the fallback build output, install `V2/cursor-extension/review-gate-v2-2.7.3.vsix`.
+Use the VSIX copied from `V2/review-gate-v2-2.7.3.vsix`.
 
 ### Step 7: Load the Current V2 Rule
 
