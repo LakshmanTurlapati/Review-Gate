@@ -52,11 +52,12 @@ Plans:
   1. User feedback, attachment metadata, and speech transcripts are written only to scoped per-session locations and cleaned up after handoff.
   2. Review Gate rejects malformed or unauthenticated local IPC messages without altering the active session state.
   3. The popup interface loads required assets locally and avoids unsafe HTML injection patterns.
-**Plans**: 3 plans
+**Plans**: 4 plans
 Plans:
 - [x] 03-01-PLAN.md - Move active IPC, attachment, and speech artifacts into Review Gate-owned per-session runtime directories with whole-session cleanup.
 - [x] 03-02-PLAN.md - Require authenticated envelope validation, atomic JSON writes, and redacted status or log surfaces for the active IPC path.
 - [x] 03-03-PLAN.md - Harden the popup webview with local assets, strict CSP, and DOM-safe rendering paths.
+- [ ] 03-04-PLAN.md - Close the verification blockers by redacting residual diagnostics and requiring live server-backed proof before the extension accepts a new MCP trigger.
 **UI hint**: yes
 
 ### Phase 4: Automated Hardening Verification
