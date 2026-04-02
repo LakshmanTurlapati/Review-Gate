@@ -2,9 +2,9 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: completed
-stopped_at: Phase 05 complete; milestone ready for audit -> complete -> cleanup lifecycle
-last_updated: "2026-04-02T22:23:27Z"
+status: milestone_complete
+stopped_at: v1.0 milestone completed, archived, and phase directories moved to .planning/milestones/v1.0-phases/
+last_updated: "2026-04-02T22:35:00Z"
 last_activity: 2026-04-02
 progress:
   total_phases: 5
@@ -21,13 +21,13 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-02)
 
 **Core value:** Keep the human and agent in the same working loop until the human says the task is complete.
-**Current focus:** Milestone lifecycle (audit -> complete -> cleanup)
+**Current focus:** No active milestone
 
 ## Current Position
 
-Phase: Complete
-Plan: All 16 plans complete
-Status: Ready for milestone lifecycle
+Phase: Milestone archived
+Plan: v1.0 closed
+Status: Complete
 Last activity: 2026-04-02
 
 Progress: [██████████] 100%
@@ -82,7 +82,7 @@ Recent decisions affecting current work:
 
 - V2 remains the primary product surface; roadmap work hardens the shipped MCP plus extension path instead of inventing a new flow.
 - Work is sequenced as installation correctness -> session reliability -> local IPC security -> automated verification -> release consistency.
-- [Phase 01]: Installers now resolve the shipped VSIX from V2/ first and use V2/cursor-extension/ only as a fallback while keeping the installed basename stable.
+- [Phase 01/05]: Installers now resolve the canonical shipped VSIX from `V2/` only, and the old `V2/cursor-extension/` fallback artifact has been removed from the supported release surface.
 - [Phase 01]: ReviewGateV2.mdc and targeted update_mcp_config.py removal are now the canonical V2 install and uninstall assets across platform scripts.
 - [Phase 01]: Native platform smoke remains deferred in `01-HUMAN-UAT.md`, but automated source and fixture checks passed for all four installation-integrity truths.
 - [Phase 02]: Made review_gate_response_<trigger_id>.json the only authoritative MCP reply file for active popup exchanges.
@@ -116,7 +116,7 @@ Recent decisions affecting current work:
 
 ### Pending Todos
 
-None yet.
+- Start the next milestone when the deferred live-host validation and/or product-expansion goals are ready to be planned.
 
 ### Blockers/Concerns
 
@@ -127,6 +127,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-02T22:23:27Z
-Stopped at: Phase 05 complete; proceed to milestone audit, archive, and cleanup
-Resume file: None
+Last session: 2026-04-02T22:35:00Z
+Stopped at: v1.0 milestone complete and archived
+Resume file: Start the next cycle with `$gsd-new-milestone`

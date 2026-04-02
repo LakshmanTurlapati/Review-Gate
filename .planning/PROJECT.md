@@ -8,6 +8,16 @@ Review Gate is a local-first companion for Cursor IDE that keeps an AI task open
 
 Keep the human and agent in the same working loop until the human says the task is complete.
 
+## Current State
+
+Review Gate v1.0 shipped on 2026-04-02. The shipped V2 path now has corrected cross-platform installers, deterministic popup session routing, scoped authenticated local IPC, repo-root regression coverage, and a manifest-backed canonical release surface rooted at `V2/review-gate-v2-2.7.3.vsix`.
+
+## Next Milestone Goals
+
+- Close the deferred native macOS and Windows installer smoke checks captured during Phase 1.
+- Run the deferred live Cursor popup and security UAT from Phases 2 and 3.
+- Decide whether the next milestone continues stabilization or starts product-expansion work such as additional tools, safer multi-session UX, or a reproducible distribution channel.
+
 ## Requirements
 
 ### Validated
@@ -42,8 +52,8 @@ Keep the human and agent in the same working loop until the human says the task 
 
 - The repository contains two generations of the product: the original terminal-driven rule in `ReviewGate.mdc` and the MCP-based V2 implementation under `V2/`.
 - V2 is implemented as a monolithic Python MCP server in `V2/review_gate_v2_mcp.py`, a monolithic Cursor extension host/webview in `V2/cursor-extension/extension.js`, and platform-specific install/uninstall scripts in `V2/install.*` and `V2/uninstall.*`.
-- Current codebase mapping found no automated tests or CI, duplicate committed VSIX artifacts, stale documentation references, and several installer/runtime correctness issues.
-- The current roadmap assumption is that the existing feature set is worth preserving, but the next milestone should make it safer to install, easier to maintain, and more reproducible to release.
+- v1.0 closed the original hardening roadmap: installer/runtime correctness issues are addressed, automated regression coverage exists, and the duplicate committed VSIX surface has been removed.
+- The next milestone can build on a verified release baseline instead of continuing basic stabilization work in the critical V2 path.
 
 ## Constraints
 
@@ -84,4 +94,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-04-02 after Phase 5*
+*Last updated: 2026-04-02 after v1.0 milestone*

@@ -92,7 +92,7 @@ graph TD
 
 #### Step 1: One-Click Technical Setup
 
-**macOS Installation (Fully Tested)**
+**macOS Installation**
 ```bash
 # Clone repository and navigate to V2 subdirectory
 git clone https://github.com/LakshmanTurlapati/Review-Gate.git
@@ -238,9 +238,9 @@ cat ~/.cursor/mcp.json
 * **MCP SERVER RUNS LOCALLY:** The rule uses a local MCP server that integrates with Cursor. The installer sets this up automatically.
 * **SPEECH PROCESSING IS LOCAL:** Your voice is processed locally using Faster-Whisper AI - nothing goes to the cloud.
 * **PLATFORM COMPATIBILITY:** 
-  - **macOS**: Fully tested and works flawlessly
-  - **Windows**: Implemented and supported
-  - **Linux**: Should work but not extensively tested
+  - **macOS**: Primary development path with automated coverage; native installer and live Cursor validation remain tracked follow-up checks
+  - **Windows**: Implemented and supported, with native shell smoke still environment-dependent
+  - **Linux**: Supported path, but less battle-tested than macOS
 * **PYTHON & SOX NEEDED:** The installer handles these, but your system needs to support Python 3 and SoX for speech functionality.
 * **CURSOR UPDATES MIGHT CHANGE THINGS:** Future Cursor versions could affect how this rule behaves. What works today might need tweaks tomorrow!
 * **REMEMBER THE RULE:** The MCP server is just the engine - you MUST copy the V2 rule to your Cursor settings for automatic activation!
