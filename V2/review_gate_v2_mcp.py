@@ -111,6 +111,8 @@ class ReviewGateServer:
         self.shutdown_requested = False
         self.shutdown_reason = ""
         self._last_attachments = []
+        self._last_session_outcome = {"status": "idle", "message": ""}
+        self._last_acknowledgement_outcome = {"status": "idle", "message": ""}
         self._whisper_model = None
         
         # Initialize Whisper model with comprehensive error handling
@@ -189,6 +191,82 @@ class ReviewGateServer:
             
             self._whisper_error = error_msg
             return None
+
+    def _clear_last_attachments(self):
+        """Reset attachment state for any non-response outcome."""
+        self._last_attachments = []
+
+    def _set_session_outcome(self, status: str, message: str = "", **extra: Any) -> Dict[str, Any]:
+        outcome = {"status": status, "message": message, **extra}
+        self._last_session_outcome = outcome
+        if status != "response":
+            self._clear_last_attachments()
+        return outcome
+
+    def _set_acknowledgement_outcome(self, status: str, message: str = "", **extra: Any) -> Dict[str, Any]:
+        outcome = {"status": status, "message": message, **extra}
+        self._last_acknowledgement_outcome = outcome
+        return outcome
+
+    def _format_session_outcome_text(self, outcome: Optional[Dict[str, Any]], default_timeout_message: str) -> str:
+        outcome = outcome or {}
+        status = str(outcome.get("status", "error")).strip().lower()
+        message = str(outcome.get("message") or "").strip()
+        event_type = str(outcome.get("event_type") or "").strip()
+
+        if status == "busy":
+            prefix = "BUSY"
+            if not message:
+                message = "Review Gate popup is already handling another active session."
+        elif status == "timeout":
+            prefix = "TIMEOUT"
+            if not message:
+                message = default_timeout_message
+        else:
+            prefix = "ERROR"
+            if not message:
+                if status == "cancelled":
+                    message = "Review Gate popup was cancelled before the user responded."
+                else:
+                    message = "Review Gate popup failed before the user response could be collected."
+
+        if event_type and event_type.startswith("SESSION_") and event_type not in message:
+            message = f"{message} ({event_type})"
+
+        return f"{prefix}: {message}"
+
+    def _cleanup_stale_session_files(self, max_age_seconds: int = 600) -> int:
+        """Remove abandoned session-owned IPC files before they can be reused."""
+        cutoff = time.time() - max_age_seconds
+        removed_count = 0
+
+        for kind in SESSION_FILE_NAMES:
+            for temp_file in glob.glob(_session_glob(kind)):
+                temp_path = Path(temp_file)
+                try:
+                    if not temp_path.exists() or temp_path.stat().st_mtime >= cutoff:
+                        continue
+
+                    temp_path.unlink()
+                    removed_count += 1
+                    logger.info(f"🧹 Removed stale {kind} file: {temp_path.name}")
+                except Exception as cleanup_error:
+                    logger.warning(f"⚠️ Could not clean up stale {kind} file {temp_path}: {cleanup_error}")
+
+        audio_pattern = os.path.join(get_temp_path(""), "review_gate_audio_*.wav")
+        for audio_file in glob.glob(audio_pattern):
+            audio_path = Path(audio_file)
+            try:
+                if not audio_path.exists() or audio_path.stat().st_mtime >= cutoff:
+                    continue
+
+                audio_path.unlink()
+                removed_count += 1
+                logger.info(f"🧹 Removed stale audio file: {audio_path.name}")
+            except Exception as cleanup_error:
+                logger.warning(f"⚠️ Could not clean up stale audio file {audio_path}: {cleanup_error}")
+
+        return removed_count
 
     def setup_handlers(self):
         """Set up MCP request handlers"""
@@ -334,7 +412,9 @@ class ReviewGateServer:
         title = args.get("title", "Review Gate V2 - ゲート")
         context = args.get("context", "")
         urgent = args.get("urgent", False)
-        self._last_attachments = []
+        self._clear_last_attachments()
+        self._set_session_outcome("pending")
+        self._set_acknowledgement_outcome("pending")
         
         logger.info(f"💬 ACTIVATING Review Gate chat popup IMMEDIATELY for Cursor Agent")
         logger.info(f"📝 Title: {title}")
@@ -355,53 +435,62 @@ class ReviewGateServer:
             "immediate_activation": True
         })
         
-        if success:
-            logger.info(f"🔥 POPUP TRIGGERED IMMEDIATELY - waiting for user input (trigger_id: {trigger_id})")
-            
-            # Wait for extension acknowledgement first
-            ack_received = await self._wait_for_extension_acknowledgement(trigger_id, timeout=30)
-            if ack_received:
-                logger.info("📨 Extension acknowledged popup activation")
-            else:
-                logger.warning("⚠️ No extension acknowledgement received - popup may not have opened")
-            
-            # Wait for user input from the popup with 5 MINUTE timeout
-            logger.info("⏳ Waiting for user input for up to 5 minutes...")
-            user_input = await self._wait_for_user_input(trigger_id, timeout=300)  # 5 MINUTE timeout
-            
-            if user_input:
-                # Return user input directly to MCP client
-                logger.info(f"✅ RETURNING USER REVIEW TO MCP CLIENT: {user_input[:100]}...")
+        try:
+            if success:
+                logger.info(f"🔥 POPUP TRIGGERED IMMEDIATELY - waiting for user input (trigger_id: {trigger_id})")
                 
-                # Check for images in the last response data
-                response_content = [TextContent(type="text", text=f"User Response: {user_input}")]
+                # Wait for extension acknowledgement first
+                ack_received = await self._wait_for_extension_acknowledgement(trigger_id, timeout=30)
+                if ack_received:
+                    logger.info("📨 Extension acknowledged popup activation")
+                else:
+                    response = self._format_session_outcome_text(
+                        self._last_acknowledgement_outcome,
+                        "Review Gate popup was not acknowledged by the Cursor extension within 30 seconds."
+                    )
+                    logger.warning(f"⚠️ Review Gate acknowledgement failed: {response}")
+                    return [TextContent(type="text", text=response)]
                 
-                # If we have stored attachment data, include images
-                if hasattr(self, '_last_attachments') and self._last_attachments:
-                    for attachment in self._last_attachments:
-                        if attachment.get('mimeType', '').startswith('image/'):
-                            try:
-                                image_content = ImageContent(
-                                    type="image",
-                                    data=attachment['base64Data'],
-                                    mimeType=attachment['mimeType']
-                                )
-                                response_content.append(image_content)
-                                logger.info(f"📸 Added image to response: {attachment.get('fileName', 'unknown')}")
-                            except Exception as e:
-                                logger.error(f"❌ Error adding image to response: {e}")
+                # Wait for user input from the popup with 5 MINUTE timeout
+                logger.info("⏳ Waiting for user input for up to 5 minutes...")
+                user_input = await self._wait_for_user_input(trigger_id, timeout=300)  # 5 MINUTE timeout
                 
-                return response_content
-            else:
-                self._last_attachments = []
-                response = f"TIMEOUT: No user input received for review gate within 5 minutes"
-                logger.warning("⚠️ Review Gate timed out waiting for user input after 5 minutes")
+                if user_input:
+                    # Return user input directly to MCP client
+                    logger.info(f"✅ RETURNING USER REVIEW TO MCP CLIENT: {user_input[:100]}...")
+                    
+                    # Check for images in the last response data
+                    response_content = [TextContent(type="text", text=f"User Response: {user_input}")]
+                    
+                    # If we have stored attachment data, include images
+                    if hasattr(self, '_last_attachments') and self._last_attachments:
+                        for attachment in self._last_attachments:
+                            if attachment.get('mimeType', '').startswith('image/'):
+                                try:
+                                    image_content = ImageContent(
+                                        type="image",
+                                        data=attachment['base64Data'],
+                                        mimeType=attachment['mimeType']
+                                    )
+                                    response_content.append(image_content)
+                                    logger.info(f"📸 Added image to response: {attachment.get('fileName', 'unknown')}")
+                                except Exception as e:
+                                    logger.error(f"❌ Error adding image to response: {e}")
+                    
+                    return response_content
+
+                response = self._format_session_outcome_text(
+                    self._last_session_outcome,
+                    "No user input received for review gate within 5 minutes."
+                )
+                logger.warning(f"⚠️ Review Gate session finished without a response: {response}")
                 return [TextContent(type="text", text=response)]
-        else:
-            self._last_attachments = []
+
             response = f"ERROR: Failed to trigger Review Gate popup"
             logger.error("❌ Failed to trigger Review Gate popup")
             return [TextContent(type="text", text=response)]
+        finally:
+            self._cleanup_stale_session_files()
 
     async def _handle_get_user_input(self, args: dict) -> list[TextContent]:
         """Retrieve user input for a specific session-scoped response file"""
@@ -429,6 +518,14 @@ class ReviewGateServer:
                     result_message += f"🎯 User input successfully captured from Review Gate."
 
                     return [TextContent(type="text", text=result_message)]
+
+                session_outcome = self._last_session_outcome
+                if session_outcome.get("status") in {"busy", "cancelled", "error"}:
+                    response = self._format_session_outcome_text(
+                        session_outcome,
+                        f"No user input found within {timeout} seconds."
+                    )
+                    return [TextContent(type="text", text=response)]
                 
                 # Short sleep to avoid excessive CPU usage
                 await asyncio.sleep(0.1)
@@ -631,6 +728,7 @@ class ReviewGateServer:
     async def _wait_for_extension_acknowledgement(self, trigger_id: str, timeout: int = 30) -> bool:
         """Wait for extension acknowledgement that popup was activated"""
         ack_file = _session_file("ack", trigger_id)
+        self._set_acknowledgement_outcome("pending")
         
         logger.info(f"🔍 Monitoring for extension acknowledgement: {ack_file}")
         
@@ -661,7 +759,9 @@ class ReviewGateServer:
                         await asyncio.sleep(check_interval)
                         continue
 
-                    ack_status = bool(data.get("acknowledged", False))
+                    ack_status = str(data.get("status", "")).strip().lower()
+                    ack_message = str(data.get("message") or "").strip()
+                    acknowledged = bool(data.get("acknowledged", False))
 
                     try:
                         ack_file.unlink()
@@ -669,9 +769,35 @@ class ReviewGateServer:
                     except Exception:
                         pass
                     
-                    if ack_status:
+                    if ack_status in {"busy", "cancelled", "error"}:
+                        if not ack_message:
+                            if ack_status == "busy":
+                                ack_message = "Review Gate popup is already handling another active session."
+                            elif ack_status == "cancelled":
+                                ack_message = "Review Gate popup was cancelled before it could be acknowledged."
+                            else:
+                                ack_message = "Review Gate popup acknowledgement failed."
+
+                        self._set_acknowledgement_outcome(
+                            ack_status,
+                            ack_message,
+                            owner_trigger_id=data.get("owner_trigger_id"),
+                            event_type=str(data.get("event_type") or "").strip()
+                        )
+                        logger.warning(f"⚠️ Extension rejected popup activation for {trigger_id}: {ack_message}")
+                        return False
+
+                    if acknowledged:
+                        self._set_acknowledgement_outcome("acknowledged", ack_message)
                         logger.info(f"📨 EXTENSION ACKNOWLEDGED popup activation for trigger {trigger_id}")
                         return True
+
+                    if ack_status:
+                        self._set_acknowledgement_outcome(
+                            "error",
+                            ack_message or f"Extension returned acknowledgement status '{ack_status}'."
+                        )
+                        return False
                     
                 # Check frequently for faster response
                 await asyncio.sleep(check_interval)
@@ -681,11 +807,16 @@ class ReviewGateServer:
                 await asyncio.sleep(0.5)
         
         logger.warning(f"⏰ TIMEOUT waiting for extension acknowledgement (trigger_id: {trigger_id})")
+        self._set_acknowledgement_outcome(
+            "timeout",
+            f"Review Gate popup was not acknowledged by the Cursor extension within {timeout} seconds."
+        )
         return False
 
     async def _wait_for_user_input(self, trigger_id: str, timeout: int = 120) -> Optional[str]:
         """Wait for user input from the Cursor extension popup for a single session file."""
         response_patterns = [_session_file("response", trigger_id)]
+        self._set_session_outcome("pending")
         
         logger.info(f"👁️ Monitoring for response files: {[str(p) for p in response_patterns]}")
         logger.info(f"🔍 Trigger ID: {trigger_id}")
@@ -729,6 +860,38 @@ class ReviewGateServer:
                                     except Exception as cleanup_error:
                                         logger.warning(f"⚠️ Cleanup error for mismatched response: {cleanup_error}")
                                     continue
+
+                                response_status = str(data.get("status", "")).strip().lower()
+                                event_type = str(data.get("event_type", "")).strip()
+                                response_message = str(data.get("message") or data.get("error") or "").strip()
+
+                                if not response_status and event_type == "SESSION_BUSY":
+                                    response_status = "busy"
+                                elif not response_status and event_type == "SESSION_CANCELLED":
+                                    response_status = "cancelled"
+
+                                if response_status in {"busy", "cancelled", "error"}:
+                                    if not response_message:
+                                        if response_status == "busy":
+                                            response_message = "Review Gate popup is already handling another active session."
+                                        elif response_status == "cancelled":
+                                            response_message = "Review Gate popup was closed before the user responded."
+                                        else:
+                                            response_message = "Review Gate popup reported an error before the user responded."
+
+                                    self._set_session_outcome(
+                                        response_status,
+                                        response_message,
+                                        event_type=event_type,
+                                        owner_trigger_id=data.get("owner_trigger_id"),
+                                        source_file=str(response_file)
+                                    )
+                                    try:
+                                        response_file.unlink()
+                                        logger.info(f"🧹 Response outcome file cleaned up: {response_file}")
+                                    except Exception as cleanup_error:
+                                        logger.warning(f"⚠️ Cleanup error for response outcome: {cleanup_error}")
+                                    return None
                                 
                                 # Process attachments if present
                                 if attachments:
@@ -743,13 +906,13 @@ class ReviewGateServer:
                                     if attachment_descriptions:
                                         user_input += f"\n\nAttached: {', '.join(attachment_descriptions)}"
                                 else:
-                                    self._last_attachments = []
+                                    self._clear_last_attachments()
                                     
                             # Handle plain text format
                             else:
                                 user_input = file_content
                                 attachments = []
-                                self._last_attachments = []
+                                self._clear_last_attachments()
                             
                             # Clean up response file immediately
                             try:
@@ -759,14 +922,15 @@ class ReviewGateServer:
                                 logger.warning(f"⚠️ Cleanup error: {cleanup_error}")
                             
                             if user_input:
+                                self._set_session_outcome("response", "User response received", source_file=str(response_file))
                                 logger.info(f"🎉 RECEIVED USER INPUT for trigger {trigger_id}: {user_input[:100]}...")
                                 return user_input
                             else:
-                                self._last_attachments = []
+                                self._clear_last_attachments()
                                 logger.warning(f"⚠️ Empty user input in file: {response_file}")
                                 
                         except Exception as e:
-                            self._last_attachments = []
+                            self._clear_last_attachments()
                             logger.error(f"❌ Error processing response file {response_file}: {e}")
                 
                 # Check more frequently for faster response
@@ -776,13 +940,14 @@ class ReviewGateServer:
                 logger.error(f"❌ Error in wait loop: {e}")
                 await asyncio.sleep(0.5)
         
-        self._last_attachments = []
+        self._set_session_outcome("timeout", f"No user input received within {timeout} seconds.")
         logger.warning(f"⏰ TIMEOUT waiting for user input (trigger_id: {trigger_id})")
         return None
 
     async def _trigger_cursor_popup_immediately(self, data: dict) -> bool:
         """Create trigger file for Cursor extension with immediate activation and enhanced debugging"""
         try:
+            self._cleanup_stale_session_files()
             # Add delay before creating trigger to ensure readiness
             await asyncio.sleep(0.1)  # Wait 100ms before trigger creation
             
