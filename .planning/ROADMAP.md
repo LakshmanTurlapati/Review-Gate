@@ -13,7 +13,7 @@ This brownfield roadmap hardens the shipped Review Gate V2 loop in the order mos
 Decimal phases appear between their surrounding integers in numeric order.
 
 - [x] **Phase 1: Installation Integrity** - Make cross-platform installation use current assets and preserve existing user configuration.
-- [ ] **Phase 2: Session Routing Reliability** - Ensure the active Review Gate request owns its trigger, response, and recovery path.
+- [x] **Phase 2: Session Routing Reliability** - Ensure the active Review Gate request owns its trigger, response, and recovery path.
 - [ ] **Phase 3: Scoped IPC Security** - Restrict local IPC and transient storage to authenticated, per-session behavior.
 - [ ] **Phase 4: Automated Hardening Verification** - Add repeatable automated checks across server, extension, and installer flows.
 - [ ] **Phase 5: Canonical Release Surface** - Make shipped artifacts and docs match one supported runtime path.
@@ -42,7 +42,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 **Plans**: 2 plans
 Plans:
 - [x] 02-01-PLAN.md - Make the temp-file protocol strictly session-scoped and remove generic or backup routing paths from the active MCP flow.
-- [ ] 02-02-PLAN.md - Add explicit busy, timeout, cancel, and stale-cleanup recovery so one popup session cannot silently corrupt another.
+- [x] 02-02-PLAN.md - Add explicit busy, timeout, cancel, and stale-cleanup recovery so one popup session cannot silently corrupt another.
 
 ### Phase 3: Scoped IPC Security
 **Goal**: Local Review Gate IPC protects sensitive user data and rejects untrusted messages by default.
@@ -83,7 +83,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Installation Integrity | 4/4 | Complete | 2026-04-02 |
-| 2. Session Routing Reliability | 1/2 | In Progress | - |
+| 2. Session Routing Reliability | 2/2 | Complete | 2026-04-02 |
 | 3. Scoped IPC Security | 0/TBD | Not started | - |
 | 4. Automated Hardening Verification | 0/TBD | Not started | - |
 | 5. Canonical Release Surface | 0/TBD | Not started | - |
