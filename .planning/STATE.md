@@ -112,7 +112,7 @@ None yet.
 
 ### Blockers/Concerns
 
-- No automated regression harness exists yet for the installer matrix.
+- Installer smoke coverage now exists, but native Windows shell execution still depends on having `pwsh`/`powershell.exe` or `cmd.exe` available in the verification environment.
 - Phase 01 still has pending native macOS and Windows smoke tests captured in `01-HUMAN-UAT.md`.
 - Phase 02 still has pending live Cursor popup checks captured in `02-HUMAN-UAT.md`.
 - Phase 03 still has pending live Cursor security checks captured in `03-HUMAN-UAT.md`.
