@@ -72,6 +72,24 @@ def _session_glob(kind: str) -> str:
     """Return a glob pattern for session-scoped IPC files of a given kind."""
     return str(_session_file(kind, "*"))
 
+
+def _session_trigger_id_from_path(kind: str, file_path: Path) -> Optional[str]:
+    """Extract a trigger_id from a session-scoped file path."""
+    template = SESSION_FILE_NAMES[kind]
+    prefix, suffix = template.split("{trigger_id}")
+    file_name = file_path.name
+
+    if not file_name.startswith(prefix) or (suffix and not file_name.endswith(suffix)):
+        return None
+
+    end_index = len(file_name) - len(suffix) if suffix else len(file_name)
+    return file_name[len(prefix):end_index]
+
+
+def _audio_file_matches_trigger(audio_file: str, trigger_id: str) -> bool:
+    """Validate that an audio file belongs to the same trigger-scoped speech session."""
+    return Path(audio_file).name.startswith(f"review_gate_audio_{trigger_id}_")
+
 # Configure logging with immediate flush
 log_file_path = get_temp_path('review_gate_v2.log')
 
@@ -1162,6 +1180,7 @@ class ReviewGateServer:
             processed_count = 0
             error_count = 0
             last_heartbeat = time.time()
+            last_cleanup = 0.0
             
             logger.info("🎤 Speech monitoring thread started successfully")
             self._speech_monitoring_active = True
@@ -1175,28 +1194,44 @@ class ReviewGateServer:
                         uptime = int(current_time - monitor_start_time)
                         logger.info(f"💓 Speech monitor heartbeat - Uptime: {uptime}s, Processed: {processed_count}, Errors: {error_count}")
                         last_heartbeat = current_time
+
+                    if current_time - last_cleanup > 30:
+                        self._cleanup_stale_session_files()
+                        last_cleanup = current_time
                     
                     # Look for speech trigger files using cross-platform temp path
                     speech_triggers = glob.glob(_session_glob("speech_trigger"))
                     
                     for trigger_file in speech_triggers:
                         try:
+                            trigger_path = Path(trigger_file)
+                            expected_trigger_id = _session_trigger_id_from_path("speech_trigger", trigger_path)
+
                             # Validate file exists and is readable
                             if not os.path.exists(trigger_file):
                                 continue
                                 
                             with open(trigger_file, 'r', encoding='utf-8') as f:
                                 trigger_data = json.load(f)
+
+                            request_trigger_id = trigger_data.get('data', {}).get('trigger_id')
+                            if expected_trigger_id and request_trigger_id and expected_trigger_id != request_trigger_id:
+                                logger.warning(
+                                    f"⚠️ Ignoring mismatched speech trigger file {trigger_path.name}: "
+                                    f"expected {expected_trigger_id}, got {request_trigger_id}"
+                                )
+                                trigger_path.unlink()
+                                continue
                             
                             if trigger_data.get('data', {}).get('tool') == 'speech_to_text':
-                                logger.info(f"🎤 Processing speech-to-text request: {os.path.basename(trigger_file)}")
+                                logger.info(f"🎤 Processing speech-to-text request: {trigger_path.name}")
                                 self._process_speech_request(trigger_data)
                                 processed_count += 1
                                 
                                 # Clean up trigger file safely
                                 try:
-                                    Path(trigger_file).unlink()
-                                    logger.debug(f"🗑️ Cleaned up trigger file: {os.path.basename(trigger_file)}")
+                                    trigger_path.unlink()
+                                    logger.debug(f"🗑️ Cleaned up trigger file: {trigger_path.name}")
                                 except Exception as cleanup_error:
                                     logger.warning(f"⚠️ Could not clean up trigger file: {cleanup_error}")
                                 
@@ -1271,6 +1306,15 @@ class ReviewGateServer:
                 logger.error(f"❌ Audio file not found: {audio_file}")
                 self._write_speech_response(trigger_id, "", "Audio file not found")
                 return
+
+            if not _audio_file_matches_trigger(audio_file, trigger_id):
+                logger.warning(f"⚠️ Ignoring mismatched audio file for trigger {trigger_id}: {audio_file}")
+                self._write_speech_response(trigger_id, "", "Audio file does not belong to the active speech session")
+                try:
+                    Path(audio_file).unlink()
+                except Exception as cleanup_error:
+                    logger.warning(f"⚠️ Could not clean up mismatched audio file {audio_file}: {cleanup_error}")
+                return
             
             logger.info(f"🎤 Transcribing audio: {audio_file}")
             
@@ -1301,6 +1345,8 @@ class ReviewGateServer:
             logger.error(f"❌ Speech transcription failed: {e}")
             trigger_id = trigger_data.get('data', {}).get('trigger_id', 'unknown')
             self._write_speech_response(trigger_id, "", str(e))
+        finally:
+            self._cleanup_stale_session_files()
 
     def _write_speech_response(self, trigger_id, transcription, error=None):
         """Write speech-to-text response"""
@@ -1310,6 +1356,7 @@ class ReviewGateServer:
                 'trigger_id': trigger_id,
                 'transcription': transcription,
                 'success': error is None,
+                'status': 'ok' if error is None else 'error',
                 'error': error,
                 'source': 'review_gate_whisper'
             }

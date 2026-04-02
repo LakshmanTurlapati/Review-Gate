@@ -136,6 +136,138 @@ function removeSessionFile(filePath, reason = 'session file cleanup') {
     }
 }
 
+function escapeRegExp(value) {
+    return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function resolveSpeechTriggerId(triggerId = null) {
+    const popupContext = getPopupContext();
+    if (activeMcpSession && activeMcpSession.triggerId) {
+        return activeMcpSession.triggerId;
+    }
+
+    if (triggerId) {
+        return triggerId;
+    }
+
+    if (popupContext.triggerId) {
+        return popupContext.triggerId;
+    }
+
+    const manualTriggerId = `manual_${Date.now()}`;
+    setPopupContext({
+        ...popupContext,
+        triggerId: manualTriggerId
+    });
+    return manualTriggerId;
+}
+
+function isSpeechSessionCurrent(triggerId) {
+    if (!triggerId) {
+        return false;
+    }
+
+    const popupContext = getPopupContext();
+    if (activeMcpSession && activeMcpSession.triggerId) {
+        return activeMcpSession.triggerId === triggerId;
+    }
+
+    return popupContext.triggerId === triggerId;
+}
+
+function removeSessionAudioFiles(triggerId, reason = 'session audio cleanup') {
+    if (!triggerId) {
+        return 0;
+    }
+
+    const tempDir = getTempPath('');
+    const audioPattern = new RegExp(`^review_gate_audio_${escapeRegExp(triggerId)}_.+\\.wav$`);
+    let removedCount = 0;
+
+    try {
+        for (const fileName of fs.readdirSync(tempDir)) {
+            if (!audioPattern.test(fileName)) {
+                continue;
+            }
+
+            const filePath = path.join(tempDir, fileName);
+            try {
+                fs.unlinkSync(filePath);
+                removedCount += 1;
+                logMessage(`${reason}: ${filePath}`);
+            } catch (error) {
+                if (error.code !== 'ENOENT') {
+                    logMessage(`Failed to remove audio file ${filePath}: ${error.message}`);
+                }
+            }
+        }
+    } catch (error) {
+        if (error.code !== 'ENOENT') {
+            logMessage(`Failed to scan for session audio files: ${error.message}`);
+        }
+    }
+
+    return removedCount;
+}
+
+function cleanupSessionSpeechArtifacts(triggerId, reason = 'session speech cleanup', options = {}) {
+    if (!triggerId) {
+        return 0;
+    }
+
+    removeSessionFile(getSessionFilePath('speechTrigger', triggerId), `${reason}: removed speech trigger`);
+    removeSessionFile(getSessionFilePath('speechResponse', triggerId), `${reason}: removed speech response`);
+
+    if (options.removeAudioFiles) {
+        return removeSessionAudioFiles(triggerId, `${reason}: removed audio file`);
+    }
+
+    return 0;
+}
+
+function cancelActiveRecording(reason, triggerId = null) {
+    if (!currentRecording) {
+        return false;
+    }
+
+    if (triggerId && currentRecording.triggerId !== triggerId) {
+        return false;
+    }
+
+    const recording = currentRecording;
+    currentRecording = null;
+
+    if (recording.finalizeTimer) {
+        clearTimeout(recording.finalizeTimer);
+    }
+
+    if (recording.forceKillTimer) {
+        clearTimeout(recording.forceKillTimer);
+    }
+
+    try {
+        if (recording.pid) {
+            recording.kill('SIGKILL');
+        }
+    } catch (error) {
+        logMessage(`Could not terminate recording process ${recording.pid}: ${error.message}`);
+    }
+
+    if (recording.audioFile) {
+        try {
+            if (fs.existsSync(recording.audioFile)) {
+                fs.unlinkSync(recording.audioFile);
+                logMessage(`${reason}: removed recording file ${recording.audioFile}`);
+            }
+        } catch (error) {
+            logMessage(`Failed to remove recording file ${recording.audioFile}: ${error.message}`);
+        }
+    }
+
+    logMessage(`${reason}: cancelled active recording for trigger ${recording.triggerId || 'unknown'}`);
+    return true;
+}
+
 function cleanupStaleSessionFiles(maxAgeMs = SESSION_STALE_MAX_AGE_MS) {
     const tempDir = getTempPath('');
     const now = Date.now();
@@ -730,6 +862,13 @@ function openReviewGatePopup(context, options = {}) {
 
                     handleReviewMessage(webviewMessage.text, attachments, currentTriggerId, currentMcpIntegration, currentSpecialHandling);
 
+                    if (currentTriggerId) {
+                        cancelActiveRecording('Review Gate response submitted', currentTriggerId);
+                        cleanupSessionSpeechArtifacts(currentTriggerId, 'Submitted session cleanup', {
+                            removeAudioFiles: true
+                        });
+                    }
+
                     if (currentMcpIntegration && currentTriggerId && responseWritten) {
                         clearActiveMcpSession(currentTriggerId);
                     }
@@ -780,6 +919,7 @@ function openReviewGatePopup(context, options = {}) {
     chatPanel.onDidDispose(
         () => {
             const closingSession = activeMcpSession ? { ...activeMcpSession } : null;
+            const closingTriggerId = closingSession ? closingSession.triggerId : currentPopupContext.triggerId;
             chatPanel = null;
 
             if (closingSession) {
@@ -789,6 +929,13 @@ function openReviewGatePopup(context, options = {}) {
                     ownerTriggerId: closingSession.triggerId,
                     ownerMessage: closingSession.message || null,
                     toolType: closingSession.toolData ? closingSession.toolData.tool : null
+                });
+            }
+
+            cancelActiveRecording('Popup disposed', closingTriggerId || null);
+            if (closingTriggerId) {
+                cleanupSessionSpeechArtifacts(closingTriggerId, 'Disposed session cleanup', {
+                    removeAudioFiles: true
                 });
             }
 
@@ -2087,26 +2234,39 @@ function getMimeType(fileName) {
 }
 
 async function handleSpeechToText(audioData, triggerId, isFilePath = false) {
+    const sessionTriggerId = resolveSpeechTriggerId(triggerId);
+
     try {
+        if (!sessionTriggerId) {
+            return;
+        }
+
+        if (activeMcpSession && activeMcpSession.triggerId !== sessionTriggerId) {
+            console.log(`Ignoring speech request for stale trigger: ${sessionTriggerId}`);
+            if (isFilePath && audioData && fs.existsSync(audioData)) {
+                fs.unlinkSync(audioData);
+            }
+            cleanupSessionSpeechArtifacts(sessionTriggerId, 'Ignored stale speech request', {
+                removeAudioFiles: true
+            });
+            return;
+        }
+
+        cleanupSessionSpeechArtifacts(sessionTriggerId, 'Preparing speech transcription');
+
         let tempAudioPath;
         
         if (isFilePath) {
-            // Audio data is already a file path
             tempAudioPath = audioData;
             console.log(`Using existing audio file for transcription: ${tempAudioPath}`);
         } else {
-            // Convert base64 audio data to buffer (legacy webview approach)
             const base64Data = audioData.split(',')[1];
             const audioBuffer = Buffer.from(base64Data, 'base64');
-            
-            // Save audio to temp file
-            tempAudioPath = getTempPath(`review_gate_audio_${triggerId}_${Date.now()}.wav`);
+            tempAudioPath = getTempPath(`review_gate_audio_${sessionTriggerId}_${Date.now()}.wav`);
             fs.writeFileSync(tempAudioPath, audioBuffer);
-            
             console.log(`Audio saved for transcription: ${tempAudioPath}`);
         }
         
-        // Send to MCP server for transcription
         const transcriptionRequest = {
             timestamp: new Date().toISOString(),
             system: "review-gate-v2",
@@ -2114,32 +2274,42 @@ async function handleSpeechToText(audioData, triggerId, isFilePath = false) {
             data: {
                 tool: "speech_to_text",
                 audio_file: tempAudioPath,
-                trigger_id: triggerId,
+                trigger_id: sessionTriggerId,
                 format: "wav"
             },
             mcp_integration: true
         };
         
-        const triggerFile = getSessionFilePath('speechTrigger', triggerId);
+        const triggerFile = getSessionFilePath('speechTrigger', sessionTriggerId);
         fs.writeFileSync(triggerFile, JSON.stringify(transcriptionRequest, null, 2));
         
         console.log(`Speech-to-text request sent: ${triggerFile}`);
         
-        // Poll for transcription result
-        const maxWaitTime = 30000; // 30 seconds
-        const pollInterval = 500; // 500ms
+        const maxWaitTime = 30000;
+        const pollInterval = 500;
         let waitTime = 0;
         
         const pollForResult = setInterval(() => {
-            const resultFile = getSessionFilePath('speechResponse', triggerId);
+            const resultFile = getSessionFilePath('speechResponse', sessionTriggerId);
+
+            if (!isSpeechSessionCurrent(sessionTriggerId)) {
+                clearInterval(pollForResult);
+                cleanupSessionSpeechArtifacts(sessionTriggerId, 'Ignored speech result for inactive session');
+                return;
+            }
             
             if (fs.existsSync(resultFile)) {
                 try {
                     const result = JSON.parse(fs.readFileSync(resultFile, 'utf8'));
+                    if (result.trigger_id && result.trigger_id !== sessionTriggerId) {
+                        removeSessionFile(resultFile, 'Removed mismatched speech response file');
+                        removeSessionFile(triggerFile, 'Removed mismatched speech trigger file');
+                        clearInterval(pollForResult);
+                        return;
+                    }
                     
                     if (result.transcription) {
-                        // Send transcription back to webview
-                        if (chatPanel) {
+                        if (chatPanel && isSpeechSessionCurrent(sessionTriggerId)) {
                             chatPanel.webview.postMessage({
                                 command: 'speechTranscribed',
                                 transcription: result.transcription
@@ -2147,26 +2317,11 @@ async function handleSpeechToText(audioData, triggerId, isFilePath = false) {
                         }
                         
                         console.log(`Speech transcribed: ${result.transcription}`);
-                        logUserInput(`Speech transcribed: ${result.transcription}`, 'SPEECH_TRANSCRIBED', triggerId);
+                        logUserInput(`Speech transcribed: ${result.transcription}`, 'SPEECH_TRANSCRIBED', sessionTriggerId);
                     }
                     
-                    // Cleanup - let MCP server handle audio file cleanup to avoid race conditions
-                    try {
-                        fs.unlinkSync(resultFile);
-                        console.log('✅ Cleaned up speech response file');
-                    } catch (e) {
-                        console.log(`Could not clean up response file: ${e.message}`);
-                    }
-                    
-                    try {
-                        fs.unlinkSync(triggerFile);
-                        console.log('✅ Cleaned up speech trigger file');
-                    } catch (e) {
-                        console.log(`Could not clean up trigger file: ${e.message}`);
-                    }
-                    
-                    // Note: Audio file cleanup is handled by MCP server to avoid race conditions
-                    
+                    removeSessionFile(resultFile, 'Cleaned up speech response file');
+                    removeSessionFile(triggerFile, 'Cleaned up speech trigger file');
                 } catch (error) {
                     console.log(`Error reading transcription result: ${error.message}`);
                 }
@@ -2176,32 +2331,25 @@ async function handleSpeechToText(audioData, triggerId, isFilePath = false) {
             
             waitTime += pollInterval;
             if (waitTime >= maxWaitTime) {
-                console.log('Speech-to-text timeout');
-                if (chatPanel) {
+                console.log(`Speech-to-text timeout for ${sessionTriggerId}`);
+                if (chatPanel && isSpeechSessionCurrent(sessionTriggerId)) {
                     chatPanel.webview.postMessage({
                         command: 'speechTranscribed',
-                        transcription: '' // Empty transcription on timeout
+                        transcription: ''
                     });
                 }
                 clearInterval(pollForResult);
-                
-                // Cleanup on timeout - only clean up trigger file
-                try {
-                    fs.unlinkSync(triggerFile);
-                    console.log('✅ Cleaned up trigger file on timeout');
-                } catch (e) {
-                    console.log(`Could not clean up trigger file on timeout: ${e.message}`);
-                }
-                // Note: Audio file cleanup handled by MCP server or OS temp cleanup
+                cleanupSessionSpeechArtifacts(sessionTriggerId, 'Speech transcription timeout');
             }
         }, pollInterval);
         
     } catch (error) {
         console.log(`Speech-to-text error: ${error.message}`);
-        if (chatPanel) {
+        cleanupSessionSpeechArtifacts(sessionTriggerId, 'Speech transcription error');
+        if (chatPanel && (!sessionTriggerId || isSpeechSessionCurrent(sessionTriggerId))) {
             chatPanel.webview.postMessage({
                 command: 'speechTranscribed',
-                transcription: '' // Empty transcription on error
+                transcription: ''
             });
         }
     }
@@ -2294,6 +2442,11 @@ async function validateSoxSetup() {
 
 async function startNodeRecording(triggerId) {
     try {
+        const sessionTriggerId = resolveSpeechTriggerId(triggerId);
+        if (!sessionTriggerId) {
+            return;
+        }
+
         if (currentRecording) {
             console.log('Recording already in progress');
             // Send feedback to webview
@@ -2306,6 +2459,25 @@ async function startNodeRecording(triggerId) {
             }
             return;
         }
+
+        if (activeMcpSession && activeMcpSession.triggerId !== sessionTriggerId) {
+            console.log(`Ignoring recording start for stale trigger: ${sessionTriggerId}`);
+            if (chatPanel) {
+                chatPanel.webview.postMessage({
+                    command: 'speechTranscribed',
+                    transcription: '',
+                    error: 'Recording is only available for the active Review Gate session'
+                });
+            }
+            cleanupSessionSpeechArtifacts(sessionTriggerId, 'Ignored stale recording start', {
+                removeAudioFiles: true
+            });
+            return;
+        }
+
+        cleanupSessionSpeechArtifacts(sessionTriggerId, 'Starting speech recording', {
+            removeAudioFiles: true
+        });
         
         // Validate SoX setup before recording
         console.log('🔍 Validating SoX and microphone setup...');
@@ -2324,7 +2496,7 @@ async function startNodeRecording(triggerId) {
         console.log('✅ SoX validation successful - proceeding with recording');
         
         const timestamp = Date.now();
-        const audioFile = getTempPath(`review_gate_audio_${triggerId}_${timestamp}.wav`);
+        const audioFile = getTempPath(`review_gate_audio_${sessionTriggerId}_${timestamp}.wav`);
         
         console.log(`🎤 Starting SoX recording: ${audioFile}`);
         
@@ -2340,15 +2512,18 @@ async function startNodeRecording(triggerId) {
         console.log(`🎤 Starting sox with args:`, soxArgs);
         
         // Spawn sox process
-        currentRecording = spawn('sox', soxArgs);
+        const recordingProcess = spawn('sox', soxArgs);
+        currentRecording = recordingProcess;
         
         // Store metadata
-        currentRecording.audioFile = audioFile;
-        currentRecording.triggerId = triggerId;
-        currentRecording.startTime = Date.now();
+        recordingProcess.audioFile = audioFile;
+        recordingProcess.triggerId = sessionTriggerId;
+        recordingProcess.startTime = Date.now();
+        recordingProcess.finalizeTimer = null;
+        recordingProcess.forceKillTimer = null;
         
         // Handle sox process events
-        currentRecording.on('error', (error) => {
+        recordingProcess.on('error', (error) => {
             console.log(`❌ SoX process error: ${error.message}`);
             if (chatPanel) {
                 chatPanel.webview.postMessage({
@@ -2357,14 +2532,19 @@ async function startNodeRecording(triggerId) {
                     error: `Recording failed: ${error.message}`
                 });
             }
-            currentRecording = null;
+            cleanupSessionSpeechArtifacts(sessionTriggerId, 'Speech recording process error', {
+                removeAudioFiles: true
+            });
+            if (currentRecording && currentRecording.pid === recordingProcess.pid) {
+                currentRecording = null;
+            }
         });
         
-        currentRecording.stderr.on('data', (data) => {
+        recordingProcess.stderr.on('data', (data) => {
             console.log(`SoX stderr: ${data}`);
         });
         
-        console.log(`✅ SoX recording started: PID ${currentRecording.pid}, file: ${audioFile}`);
+        console.log(`✅ SoX recording started: PID ${recordingProcess.pid}, file: ${audioFile}`);
         
         // Send confirmation to webview that recording has started
         if (chatPanel) {
@@ -2389,6 +2569,7 @@ async function startNodeRecording(triggerId) {
 
 function stopNodeRecording(triggerId) {
     try {
+        const sessionTriggerId = resolveSpeechTriggerId(triggerId);
         if (!currentRecording) {
             console.log('No recording in progress');
             if (chatPanel) {
@@ -2400,21 +2581,43 @@ function stopNodeRecording(triggerId) {
             }
             return;
         }
+
+        const recording = currentRecording;
+        if (!sessionTriggerId || recording.triggerId !== sessionTriggerId || !isSpeechSessionCurrent(recording.triggerId)) {
+            console.log(`Discarding stale recording for trigger: ${recording.triggerId}`);
+            cancelActiveRecording('Discarded stale recording', recording.triggerId);
+            cleanupSessionSpeechArtifacts(recording.triggerId, 'Discarded stale recording cleanup', {
+                removeAudioFiles: true
+            });
+            return;
+        }
         
-        const audioFile = currentRecording.audioFile;
-        const recordingPid = currentRecording.pid;
+        currentRecording = null;
+        const audioFile = recording.audioFile;
+        const recordingPid = recording.pid;
         console.log(`🛑 Stopping SoX recording: PID ${recordingPid}, file: ${audioFile}`);
         
         // Stop the sox process by sending SIGTERM
-        currentRecording.kill('SIGTERM');
+        recording.kill('SIGTERM');
         
         // Wait for process to exit and file to be finalized
-        currentRecording.on('exit', (code, signal) => {
+        recording.on('exit', (code, signal) => {
             console.log(`📝 SoX process exited with code: ${code}, signal: ${signal}`);
+            if (recording.forceKillTimer) {
+                clearTimeout(recording.forceKillTimer);
+            }
             
             // Give a moment for file system to sync
-            setTimeout(() => {
+            recording.finalizeTimer = setTimeout(() => {
                 console.log(`📝 Checking for audio file: ${audioFile}`);
+
+                if (!isSpeechSessionCurrent(sessionTriggerId)) {
+                    console.log(`Ignoring finalized recording for inactive session: ${sessionTriggerId}`);
+                    cleanupSessionSpeechArtifacts(sessionTriggerId, 'Ignored stale recording result', {
+                        removeAudioFiles: true
+                    });
+                    return;
+                }
                 
                 if (fs.existsSync(audioFile)) {
                     const stats = fs.statSync(audioFile);
@@ -2424,7 +2627,7 @@ function stopNodeRecording(triggerId) {
                     if (stats.size > 500) {
                         console.log(`🎤 Audio file ready for transcription: ${audioFile} (${stats.size} bytes)`);
                         // Send to MCP server for transcription
-                        handleSpeechToText(audioFile, triggerId, true);
+                        handleSpeechToText(audioFile, sessionTriggerId, true);
                     } else {
                         console.log('⚠️ Audio file too small, probably no speech detected');
                         if (chatPanel) {
@@ -2451,21 +2654,21 @@ function stopNodeRecording(triggerId) {
                         });
                     }
                 }
-                
-                currentRecording = null;
             }, 1000); // Wait 1 second for file system sync
         });
         
         // Set a timeout in case the process doesn't exit gracefully
-        setTimeout(() => {
-            if (currentRecording && currentRecording.pid) {
-                console.log(`⚠️ Force killing SoX process: ${currentRecording.pid}`);
+        recording.forceKillTimer = setTimeout(() => {
+            if (recording.pid) {
+                console.log(`⚠️ Force killing SoX process: ${recording.pid}`);
                 try {
-                    currentRecording.kill('SIGKILL');
+                    recording.kill('SIGKILL');
                 } catch (e) {
                     console.log(`Could not force kill: ${e.message}`);
                 }
-                currentRecording = null;
+                cleanupSessionSpeechArtifacts(sessionTriggerId, 'Force cleaned speech recording', {
+                    removeAudioFiles: true
+                });
             }
         }, 3000);
         
@@ -2492,6 +2695,9 @@ function deactivate() {
     if (statusCheckInterval) {
         clearInterval(statusCheckInterval);
     }
+
+    cancelActiveRecording('Extension deactivated');
+    cleanupStaleSessionFiles(0);
     
     if (outputChannel) {
         outputChannel.dispose();
