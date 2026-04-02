@@ -39,7 +39,10 @@ Decimal phases appear between their surrounding integers in numeric order.
   1. User can complete a popup round-trip without another in-flight session overwriting the active trigger or response state.
   2. User receives responses only for the active Review Gate session, with no stale or unrelated fallback-file content leaking into the exchange.
   3. User gets a clear timeout or failure recovery path when popup handoff fails instead of a silent stall.
-**Plans**: TBD
+**Plans**: 2 plans
+Plans:
+- [ ] 02-01-PLAN.md - Make the temp-file protocol strictly session-scoped and remove generic or backup routing paths from the active MCP flow.
+- [ ] 02-02-PLAN.md - Add explicit busy, timeout, cancel, and stale-cleanup recovery so one popup session cannot silently corrupt another.
 
 ### Phase 3: Scoped IPC Security
 **Goal**: Local Review Gate IPC protects sensitive user data and rejects untrusted messages by default.
@@ -80,7 +83,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Installation Integrity | 4/4 | Complete | 2026-04-02 |
-| 2. Session Routing Reliability | 0/TBD | Not started | - |
+| 2. Session Routing Reliability | 0/2 | Not started | - |
 | 3. Scoped IPC Security | 0/TBD | Not started | - |
 | 4. Automated Hardening Verification | 0/TBD | Not started | - |
 | 5. Canonical Release Surface | 0/TBD | Not started | - |
