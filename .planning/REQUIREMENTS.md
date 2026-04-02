@@ -9,8 +9,8 @@
 
 - [ ] **INST-01**: User can run the macOS/Linux installer without shell parsing failures from dependency version specifiers.
 - [ ] **INST-02**: User can install Review Gate on default macOS without requiring GNU `timeout` or manual script patching.
-- [ ] **INST-03**: User can install Review Gate on Windows without losing unrelated MCP server entries in the user's MCP configuration.
-- [ ] **INST-04**: User can install the current V2 rule and current VSIX artifact without following stale file names or wrong rule paths.
+- [x] **INST-03**: User can install Review Gate on Windows without losing unrelated MCP server entries in the user's MCP configuration.
+- [x] **INST-04**: User can install the current V2 rule and current VSIX artifact without following stale file names or wrong rule paths.
 
 ### Session Reliability
 
@@ -53,8 +53,8 @@
 |-------------|-------|--------|
 | INST-01 | Phase 1 | Pending |
 | INST-02 | Phase 1 | Pending |
-| INST-03 | Phase 1 | Pending |
-| INST-04 | Phase 1 | Pending |
+| INST-03 | Phase 1 | Complete |
+| INST-04 | Phase 1 | Complete |
 | SESS-01 | Phase 2 | Pending |
 | SESS-02 | Phase 2 | Pending |
 | SESS-03 | Phase 2 | Pending |
