@@ -15,6 +15,7 @@ import json
 import sys
 import logging
 import os
+import shutil
 import time
 import uuid
 import glob
@@ -107,7 +108,12 @@ def _session_token(trigger_id: str) -> str:
 
 def _session_dir(trigger_id: str) -> Path:
     """Return the canonical session directory for a trigger."""
-    return _ensure_private_directory(_sessions_root() / _session_token(trigger_id))
+    return _ensure_private_directory(_session_path(trigger_id))
+
+
+def _session_path(trigger_id: str) -> Path:
+    """Return the session directory path without creating it."""
+    return _sessions_root() / _session_token(trigger_id)
 
 
 SESSION_FILE_NAMES = {
@@ -283,6 +289,30 @@ class ReviewGateServer:
         self._last_acknowledgement_outcome = outcome
         return outcome
 
+    def _session_last_activity(self, session_path: Path) -> float:
+        """Return the newest modification time inside a session directory."""
+        latest_mtime = session_path.stat().st_mtime
+        for child_path in session_path.rglob("*"):
+            try:
+                latest_mtime = max(latest_mtime, child_path.stat().st_mtime)
+            except FileNotFoundError:
+                continue
+        return latest_mtime
+
+    def _cleanup_session_directory(self, trigger_id: str) -> bool:
+        """Remove an entire session directory and every IPC artifact it owns."""
+        session_path = _session_path(trigger_id)
+        if not session_path.exists():
+            return False
+
+        try:
+            shutil.rmtree(session_path)
+            logger.info(f"🧹 Removed session directory for trigger {trigger_id}: {session_path}")
+            return True
+        except Exception as cleanup_error:
+            logger.warning(f"⚠️ Could not clean up session directory {session_path}: {cleanup_error}")
+            return False
+
     def _format_session_outcome_text(self, outcome: Optional[Dict[str, Any]], default_timeout_message: str) -> str:
         outcome = outcome or {}
         status = str(outcome.get("status", "error")).strip().lower()
@@ -311,35 +341,27 @@ class ReviewGateServer:
         return f"{prefix}: {message}"
 
     def _cleanup_stale_session_files(self, max_age_seconds: int = 600) -> int:
-        """Remove abandoned session-owned IPC files before they can be reused."""
+        """Remove abandoned session directories before they can be reused."""
         cutoff = time.time() - max_age_seconds
         removed_count = 0
 
-        for kind in SESSION_FILE_NAMES:
-            for temp_file in glob.glob(_session_glob(kind)):
-                temp_path = Path(temp_file)
-                try:
-                    if not temp_path.exists() or temp_path.stat().st_mtime >= cutoff:
-                        continue
-
-                    temp_path.unlink()
-                    removed_count += 1
-                    logger.info(f"🧹 Removed stale {kind} file: {temp_path.name}")
-                except Exception as cleanup_error:
-                    logger.warning(f"⚠️ Could not clean up stale {kind} file {temp_path}: {cleanup_error}")
-
-        audio_pattern = os.path.join(get_temp_path(""), "review_gate_audio_*.wav")
-        for audio_file in glob.glob(audio_pattern):
-            audio_path = Path(audio_file)
-            try:
-                if not audio_path.exists() or audio_path.stat().st_mtime >= cutoff:
+        try:
+            for session_path in _sessions_root().iterdir():
+                if not session_path.is_dir():
                     continue
 
-                audio_path.unlink()
-                removed_count += 1
-                logger.info(f"🧹 Removed stale audio file: {audio_path.name}")
-            except Exception as cleanup_error:
-                logger.warning(f"⚠️ Could not clean up stale audio file {audio_path}: {cleanup_error}")
+                try:
+                    if self._session_last_activity(session_path) >= cutoff:
+                        continue
+
+                    if self._cleanup_session_directory(session_path.name):
+                        removed_count += 1
+                except FileNotFoundError:
+                    continue
+                except Exception as cleanup_error:
+                    logger.warning(f"⚠️ Could not inspect stale session directory {session_path}: {cleanup_error}")
+        except FileNotFoundError:
+            return 0
 
         return removed_count
 
@@ -455,31 +477,35 @@ class ReviewGateServer:
             "unified_tool": True
         })
         
-        if success:
-            logger.info(f"🔥 UNIFIED POPUP TRIGGERED - waiting for user input (trigger_id: {trigger_id}, mode: {mode})")
-            
-            # Wait for user input with specified timeout
-            user_input = await self._wait_for_user_input(trigger_id, timeout=timeout)
-            
-            if user_input:
-                # Return user input directly to MCP client with mode context
-                logger.info(f"✅ RETURNING USER INPUT TO MCP CLIENT: {user_input[:100]}...")
-                result_message = f"✅ User Response (Mode: {mode})\n\n"
-                result_message += f"💬 Input: {user_input}\n"
-                result_message += f"📝 Request: {message}\n"
-                result_message += f"📍 Context: {context}\n"
-                result_message += f"⚙️ Mode: {mode}\n"
-                result_message += f"🚨 Urgent: {urgent}\n\n"
-                result_message += f"🎯 User interaction completed successfully via unified Review Gate tool."
+        try:
+            if success:
+                logger.info(f"🔥 UNIFIED POPUP TRIGGERED - waiting for user input (trigger_id: {trigger_id}, mode: {mode})")
                 
-                return [TextContent(type="text", text=result_message)]
-            else:
+                # Wait for user input with specified timeout
+                user_input = await self._wait_for_user_input(trigger_id, timeout=timeout)
+                
+                if user_input:
+                    # Return user input directly to MCP client with mode context
+                    logger.info(f"✅ RETURNING USER INPUT TO MCP CLIENT: {user_input[:100]}...")
+                    result_message = f"✅ User Response (Mode: {mode})\n\n"
+                    result_message += f"💬 Input: {user_input}\n"
+                    result_message += f"📝 Request: {message}\n"
+                    result_message += f"📍 Context: {context}\n"
+                    result_message += f"⚙️ Mode: {mode}\n"
+                    result_message += f"🚨 Urgent: {urgent}\n\n"
+                    result_message += f"🎯 User interaction completed successfully via unified Review Gate tool."
+                    
+                    return [TextContent(type="text", text=result_message)]
+
                 response = f"TIMEOUT: No user input received within {timeout} seconds (Mode: {mode})"
                 logger.warning(f"⚠️ Unified Review Gate timed out waiting for user input after {timeout} seconds")
                 return [TextContent(type="text", text=response)]
-        else:
+
             response = f"ERROR: Failed to trigger unified Review Gate popup (Mode: {mode})"
             return [TextContent(type="text", text=response)]
+        finally:
+            self._cleanup_session_directory(trigger_id)
+            self._cleanup_stale_session_files()
 
     async def _handle_review_gate_chat(self, args: dict) -> list[TextContent]:
         """Handle Review Gate chat popup and wait for user input with 5 minute timeout"""
@@ -565,6 +591,7 @@ class ReviewGateServer:
             logger.error("❌ Failed to trigger Review Gate popup")
             return [TextContent(type="text", text=response)]
         finally:
+            self._cleanup_session_directory(trigger_id)
             self._cleanup_stale_session_files()
 
     async def _handle_get_user_input(self, args: dict) -> list[TextContent]:
@@ -637,23 +664,26 @@ class ReviewGateServer:
             "immediate_activation": True
         })
         
-        if success:
-            logger.info(f"🔥 QUICK POPUP TRIGGERED - waiting for user input (trigger_id: {trigger_id})")
-            
-            # Wait for quick user input
-            user_input = await self._wait_for_user_input(trigger_id, timeout=90)  # 1.5 minute timeout for quick review
-            
-            if user_input:
-                # Return user input directly to MCP client
-                logger.info(f"✅ RETURNING QUICK REVIEW TO MCP CLIENT: {user_input}")
-                return [TextContent(type="text", text=user_input)]
-            else:
+        try:
+            if success:
+                logger.info(f"🔥 QUICK POPUP TRIGGERED - waiting for user input (trigger_id: {trigger_id})")
+                
+                # Wait for quick user input
+                user_input = await self._wait_for_user_input(trigger_id, timeout=90)  # 1.5 minute timeout for quick review
+                
+                if user_input:
+                    # Return user input directly to MCP client
+                    logger.info(f"✅ RETURNING QUICK REVIEW TO MCP CLIENT: {user_input}")
+                    return [TextContent(type="text", text=user_input)]
+
                 response = f"TIMEOUT: No quick review input received within 1.5 minutes"
                 logger.warning("⚠️ Quick review timed out")
                 return [TextContent(type="text", text=response)]
-        else:
+
             response = f"ERROR: Failed to trigger quick review popup"
             return [TextContent(type="text", text=response)]
+        finally:
+            self._cleanup_session_directory(trigger_id)
 
     async def _handle_file_review(self, args: dict) -> list[TextContent]:
         """Handle file review request and wait for file selection with immediate activation"""
@@ -674,23 +704,26 @@ class ReviewGateServer:
             "immediate_activation": True
         })
         
-        if success:
-            logger.info(f"🔥 FILE POPUP TRIGGERED - waiting for selection (trigger_id: {trigger_id})")
-            
-            # Wait for file selection
-            user_input = await self._wait_for_user_input(trigger_id, timeout=90)  # 1.5 minute timeout
-            
-            if user_input:
-                response = f"📁 File Review completed!\n\n**Selected Files:** {user_input}\n\n**Instruction:** {instruction}\n**Allowed Types:** {', '.join(file_types)}\n\nYou can now proceed to analyze the selected files."
-                logger.info(f"✅ FILES SELECTED: {user_input}")
+        try:
+            if success:
+                logger.info(f"🔥 FILE POPUP TRIGGERED - waiting for selection (trigger_id: {trigger_id})")
+                
+                # Wait for file selection
+                user_input = await self._wait_for_user_input(trigger_id, timeout=90)  # 1.5 minute timeout
+                
+                if user_input:
+                    response = f"📁 File Review completed!\n\n**Selected Files:** {user_input}\n\n**Instruction:** {instruction}\n**Allowed Types:** {', '.join(file_types)}\n\nYou can now proceed to analyze the selected files."
+                    logger.info(f"✅ FILES SELECTED: {user_input}")
+                else:
+                    response = f"⏰ File Review timed out.\n\n**Instruction:** {instruction}\n\nNo files selected within 1.5 minutes. Try again or proceed with current workspace files."
+                    logger.warning("⚠️ File review timed out")
             else:
-                response = f"⏰ File Review timed out.\n\n**Instruction:** {instruction}\n\nNo files selected within 1.5 minutes. Try again or proceed with current workspace files."
-                logger.warning("⚠️ File review timed out")
-        else:
-            response = f"⚠️ File Review trigger failed. Manual activation may be needed."
-        
-        logger.info("🏁 File review processing complete")
-        return [TextContent(type="text", text=response)]
+                response = f"⚠️ File Review trigger failed. Manual activation may be needed."
+            
+            logger.info("🏁 File review processing complete")
+            return [TextContent(type="text", text=response)]
+        finally:
+            self._cleanup_session_directory(trigger_id)
 
     async def _handle_ingest_text(self, args: dict) -> list[TextContent]:
         """
@@ -719,25 +752,26 @@ class ReviewGateServer:
             "immediate_activation": True
         })
         
-        if success:
-            logger.info(f"🔥 INGEST POPUP TRIGGERED - waiting for user input (trigger_id: {trigger_id})")
-            
-            # Wait for user input with appropriate timeout
-            user_input = await self._wait_for_user_input(trigger_id, timeout=120)  # 2 minute timeout
-            
-            if user_input:
-                # Return the user input for further processing
-                result_message = f"✅ Text ingestion completed!\n\n"
-                result_message += f"📝 Original Text: {text_content}\n"
-                result_message += f"💬 User Response: {user_input}\n"
-                result_message += f"📍 Source: {source}\n"
-                result_message += f"💭 Context: {context}\n"
-                result_message += f"⚙️ Processing Mode: {processing_mode}\n\n"
-                result_message += f"🎯 The text has been processed and user feedback collected successfully."
+        try:
+            if success:
+                logger.info(f"🔥 INGEST POPUP TRIGGERED - waiting for user input (trigger_id: {trigger_id})")
                 
-                logger.info(f"✅ INGEST SUCCESS: User provided feedback for text ingestion")
-                return [TextContent(type="text", text=result_message)]
-            else:
+                # Wait for user input with appropriate timeout
+                user_input = await self._wait_for_user_input(trigger_id, timeout=120)  # 2 minute timeout
+                
+                if user_input:
+                    # Return the user input for further processing
+                    result_message = f"✅ Text ingestion completed!\n\n"
+                    result_message += f"📝 Original Text: {text_content}\n"
+                    result_message += f"💬 User Response: {user_input}\n"
+                    result_message += f"📍 Source: {source}\n"
+                    result_message += f"💭 Context: {context}\n"
+                    result_message += f"⚙️ Processing Mode: {processing_mode}\n\n"
+                    result_message += f"🎯 The text has been processed and user feedback collected successfully."
+                    
+                    logger.info(f"✅ INGEST SUCCESS: User provided feedback for text ingestion")
+                    return [TextContent(type="text", text=result_message)]
+
                 result_message = f"⏰ Text ingestion timed out.\n\n"
                 result_message += f"📝 Text Content: {text_content}\n"
                 result_message += f"📍 Source: {source}\n\n"
@@ -745,13 +779,15 @@ class ReviewGateServer:
                 
                 logger.warning("⚠️ Text ingestion timed out")
                 return [TextContent(type="text", text=result_message)]
-        else:
+
             result_message = f"⚠️ Text ingestion trigger failed.\n\n"
             result_message += f"📝 Text Content: {text_content}\n"
             result_message += f"Manual activation may be needed."
             
             logger.error("❌ Failed to trigger text ingestion popup")
             return [TextContent(type="text", text=result_message)]
+        finally:
+            self._cleanup_session_directory(trigger_id)
 
     async def _handle_shutdown_mcp(self, args: dict) -> list[TextContent]:
         """Handle shutdown_mcp request and wait for confirmation with immediate activation"""
@@ -774,31 +810,34 @@ class ReviewGateServer:
             "immediate_activation": True
         })
         
-        if success:
-            logger.info(f"🛑 SHUTDOWN TRIGGERED - waiting for confirmation (trigger_id: {trigger_id})")
-            
-            # Wait for confirmation
-            user_input = await self._wait_for_user_input(trigger_id, timeout=60)  # 1 minute timeout for shutdown confirmation
-            
-            if user_input:
-                # Check if user confirmed shutdown
-                if user_input.upper().strip() in ['CONFIRM', 'YES', 'Y', 'SHUTDOWN', 'PROCEED']:
-                    self.shutdown_requested = True
-                    self.shutdown_reason = f"User confirmed: {user_input.strip()}"
-                    response = f"🛑 shutdown_mcp CONFIRMED!\n\n**User Confirmation:** {user_input}\n\n**Reason:** {reason}\n**Immediate:** {immediate}\n**Cleanup:** {cleanup}\n\n✅ MCP server will now shut down gracefully..."
-                    logger.info(f"✅ SHUTDOWN CONFIRMED BY USER: {user_input[:100]}...")
-                    logger.info(f"🛑 Server shutdown initiated - reason: {self.shutdown_reason}")
+        try:
+            if success:
+                logger.info(f"🛑 SHUTDOWN TRIGGERED - waiting for confirmation (trigger_id: {trigger_id})")
+                
+                # Wait for confirmation
+                user_input = await self._wait_for_user_input(trigger_id, timeout=60)  # 1 minute timeout for shutdown confirmation
+                
+                if user_input:
+                    # Check if user confirmed shutdown
+                    if user_input.upper().strip() in ['CONFIRM', 'YES', 'Y', 'SHUTDOWN', 'PROCEED']:
+                        self.shutdown_requested = True
+                        self.shutdown_reason = f"User confirmed: {user_input.strip()}"
+                        response = f"🛑 shutdown_mcp CONFIRMED!\n\n**User Confirmation:** {user_input}\n\n**Reason:** {reason}\n**Immediate:** {immediate}\n**Cleanup:** {cleanup}\n\n✅ MCP server will now shut down gracefully..."
+                        logger.info(f"✅ SHUTDOWN CONFIRMED BY USER: {user_input[:100]}...")
+                        logger.info(f"🛑 Server shutdown initiated - reason: {self.shutdown_reason}")
+                    else:
+                        response = f"💡 shutdown_mcp CANCELLED - Alternative instructions received!\n\n**User Response:** {user_input}\n\n**Original Reason:** {reason}\n\nShutdown cancelled. User provided alternative instructions instead of confirmation."
+                        logger.info(f"💡 SHUTDOWN CANCELLED - user provided alternative: {user_input[:100]}...")
                 else:
-                    response = f"💡 shutdown_mcp CANCELLED - Alternative instructions received!\n\n**User Response:** {user_input}\n\n**Original Reason:** {reason}\n\nShutdown cancelled. User provided alternative instructions instead of confirmation."
-                    logger.info(f"💡 SHUTDOWN CANCELLED - user provided alternative: {user_input[:100]}...")
+                    response = f"⏰ shutdown_mcp timed out.\n\n**Reason:** {reason}\n\nNo response received within 1 minute. Shutdown cancelled due to timeout."
+                    logger.warning("⚠️ Shutdown timed out - shutdown cancelled")
             else:
-                response = f"⏰ shutdown_mcp timed out.\n\n**Reason:** {reason}\n\nNo response received within 1 minute. Shutdown cancelled due to timeout."
-                logger.warning("⚠️ Shutdown timed out - shutdown cancelled")
-        else:
-            response = f"⚠️ shutdown_mcp trigger failed. Manual activation may be needed."
-        
-        logger.info("🏁 shutdown_mcp processing complete")
-        return [TextContent(type="text", text=response)]
+                response = f"⚠️ shutdown_mcp trigger failed. Manual activation may be needed."
+            
+            logger.info("🏁 shutdown_mcp processing complete")
+            return [TextContent(type="text", text=response)]
+        finally:
+            self._cleanup_session_directory(trigger_id)
 
     async def _wait_for_extension_acknowledgement(self, trigger_id: str, timeout: int = 30) -> bool:
         """Wait for extension acknowledgement that popup was activated"""
@@ -1031,15 +1070,8 @@ class ReviewGateServer:
                 logger.error("❌ Trigger data missing trigger_id")
                 return False
 
+            self._cleanup_session_directory(trigger_id)
             trigger_file = _session_file("trigger", trigger_id)
-            for kind in ("ack", "response", "trigger"):
-                session_path = _session_file(kind, trigger_id)
-                if session_path.exists():
-                    try:
-                        session_path.unlink()
-                        logger.info(f"🧹 Removed stale {kind} file for trigger {trigger_id}")
-                    except Exception as cleanup_error:
-                        logger.warning(f"⚠️ Could not remove stale {kind} file {session_path}: {cleanup_error}")
             
             trigger_data = {
                 "timestamp": datetime.now().isoformat(),
@@ -1196,30 +1228,11 @@ class ReviewGateServer:
         # Cleanup operations before shutdown
         logger.info("🧹 Performing cleanup operations before shutdown...")
         
-        # Clean up any temporary files
         try:
-            for kind in ("trigger", "ack", "response", "speech_trigger", "speech_response"):
-                for temp_file in glob.glob(_session_glob(kind)):
-                    temp_path = Path(temp_file)
-                    if temp_path.exists():
-                        temp_path.unlink()
-                        logger.info(f"🗑️ Cleaned up: {temp_path.name}")
-                    
-            # Clean up any orphaned audio files (older than 5 minutes)
-            import time
-            current_time = time.time()
-            temp_dir = get_temp_path("")
-            audio_pattern = os.path.join(temp_dir, "review_gate_audio_*.wav")
-            
-            for audio_file in glob.glob(audio_pattern):
-                try:
-                    file_age = current_time - os.path.getmtime(audio_file)
-                    if file_age > 300:  # 5 minutes
-                        Path(audio_file).unlink()
-                        logger.info(f"🗑️ Cleaned up old audio file: {os.path.basename(audio_file)}")
-                except Exception as cleanup_error:
-                    logger.warning(f"⚠️ Could not clean up audio file {audio_file}: {cleanup_error}")
-                    
+            for session_path in _sessions_root().iterdir():
+                if not session_path.is_dir():
+                    continue
+                self._cleanup_session_directory(session_path.name)
         except Exception as e:
             logger.warning(f"⚠️ Cleanup warning: {e}")
         
