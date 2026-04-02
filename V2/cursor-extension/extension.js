@@ -1,9 +1,24 @@
 const vscode = require('vscode');
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { spawn } = require('child_process');
 const IPC_PROTOCOL_VERSION = 'review-gate-v2-session-v1';
+
+function svgToDataUri(svgMarkup) {
+    return `data:image/svg+xml;base64,${Buffer.from(svgMarkup).toString('base64')}`;
+}
+
+const WEBVIEW_ICON_URIS = Object.freeze({
+    microphone: svgToDataUri(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="black" d="M12 14a3 3 0 0 0 3-3V7a3 3 0 1 0-6 0v4a3 3 0 0 0 3 3Zm5-3a1 1 0 1 1 2 0a7 7 0 0 1-6 6.93V21h3a1 1 0 1 1 0 2H8a1 1 0 1 1 0-2h3v-3.07A7 7 0 0 1 5 11a1 1 0 1 1 2 0a5 5 0 0 0 10 0Z"/></svg>`),
+    stop: svgToDataUri(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><rect fill="black" x="7" y="7" width="10" height="10" rx="2"/></svg>`),
+    spinner: svgToDataUri(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="black" d="M12 2a10 10 0 1 0 10 10h-3a7 7 0 1 1-7-7V2Z"/></svg>`),
+    image: svgToDataUri(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="black" d="M6 4a3 3 0 0 0-3 3v10a3 3 0 0 0 3 3h12a3 3 0 0 0 3-3V7a3 3 0 0 0-3-3H6Zm0 2h12a1 1 0 0 1 1 1v6.59l-2.29-2.3a1 1 0 0 0-1.42 0l-1.79 1.8-2.79-2.8a1 1 0 0 0-1.42 0L5 15.59V7a1 1 0 0 1 1-1Zm3 2.5A1.5 1.5 0 1 1 9 11.5a1.5 1.5 0 0 1 0-3ZM6.41 18l3.59-3.59 2.79 2.8a1 1 0 0 0 1.42 0l1.79-1.8L19 18H6.41Z"/></svg>`),
+    send: svgToDataUri(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="black" d="M11 20V8.83L8.41 11.4A1 1 0 0 1 7 10l4.3-4.3a1 1 0 0 1 1.4 0L17 10a1 1 0 1 1-1.41 1.41L13 8.83V20a1 1 0 1 1-2 0Z"/></svg>`),
+    close: svgToDataUri(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="black" d="M7.7 6.3a1 1 0 0 0-1.4 1.4L10.59 12 6.3 16.3a1 1 0 1 0 1.4 1.4L12 13.41l4.3 4.29a1 1 0 0 0 1.4-1.4L13.41 12l4.29-4.3a1 1 0 0 0-1.4-1.4L12 10.59 7.7 6.3Z"/></svg>`),
+    drop: svgToDataUri(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="black" d="M11 4a1 1 0 1 1 2 0v7.17l2.59-2.58A1 1 0 1 1 17 10l-4.3 4.3a1 1 0 0 1-1.4 0L7 10a1 1 0 1 1 1.41-1.41L11 11.17V4Zm-6 13a1 1 0 0 1 1 1v1h12v-1a1 1 0 1 1 2 0v1a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-1a1 1 0 0 1 1-1Z"/></svg>`)
+});
 
 // Cross-platform temp directory helper
 function getTempPath(filename) {
@@ -501,6 +516,19 @@ function removeSessionFile(filePath, reason = 'session file cleanup') {
 
 function escapeRegExp(value) {
     return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function generateWebviewNonce() {
+    return crypto.randomBytes(18).toString('base64').replace(/[^A-Za-z0-9]/g, '');
+}
+
+function serializeForWebview(value) {
+    return JSON.stringify(value)
+        .replace(/</g, '\\u003c')
+        .replace(/>/g, '\\u003e')
+        .replace(/&/g, '\\u0026')
+        .replace(/\u2028/g, '\\u2028')
+        .replace(/\u2029/g, '\\u2029');
 }
 
 function resolveSpeechTriggerId(triggerId = null) {
@@ -1214,12 +1242,19 @@ function openReviewGatePopup(context, options = {}) {
         vscode.ViewColumn.One,
         {
             enableScripts: true,
-            retainContextWhenHidden: true
+            retainContextWhenHidden: true,
+            localResourceRoots: [context.extensionUri]
         }
     );
 
     // Set the HTML content
-    chatPanel.webview.html = getReviewGateHTML(title, mcpIntegration);
+    const scriptNonce = generateWebviewNonce();
+    chatPanel.webview.html = getReviewGateHTML({
+        title: title,
+        mcpIntegration: mcpIntegration,
+        cspSource: chatPanel.webview.cspSource,
+        nonce: scriptNonce
+    });
 
     // Handle messages from webview
     chatPanel.webview.onDidReceiveMessage(
@@ -1342,14 +1377,43 @@ function openReviewGatePopup(context, options = {}) {
     }
 }
 
-function getReviewGateHTML(title = "Review Gate", mcpIntegration = false) {
+function getReviewGateHTML(options = {}) {
+    const {
+        title = 'Review Gate',
+        mcpIntegration = false,
+        cspSource = '',
+        nonce = ''
+    } = options;
+    const popupConfig = serializeForWebview({
+        title: String(title || 'Review Gate'),
+        mcpIntegration: Boolean(mcpIntegration),
+        placeholders: {
+            defaultBase: 'Type your review or feedback',
+            mcpBase: 'Cursor Agent is waiting for your response',
+            inactive: 'MCP server is not active. Please start the server to enable input.',
+            processing: 'Processing speech... Please wait',
+            speechFailed: 'Speech failed - try again',
+            noSpeech: 'No speech detected - try again'
+        },
+        titles: {
+            attach: 'Upload image',
+            mic: 'Click to speak',
+            micReady: 'Click to speak (SoX recording)',
+            recording: 'Recording... Click to stop',
+            processing: 'Processing speech...',
+            removeImage: 'Remove image',
+            send: `Send ${mcpIntegration ? 'response to Agent' : 'review'}`
+        }
+    });
+    const contentSecurityPolicy = `default-src 'none'; img-src ${cspSource} data:; style-src ${cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}';`;
+
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>${title}</title>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <meta http-equiv="Content-Security-Policy" content="${contentSecurityPolicy}">
+    <title>Review Gate</title>
     <style>
         body {
             font-family: var(--vscode-font-family);
@@ -1537,38 +1601,9 @@ function getReviewGateHTML(title = "Review Gate", mcpIntegration = false) {
             position: relative;
         }
         
-        .mic-icon {
-            position: absolute;
-            left: 16px;
-            top: 50%;
-            transform: translateY(-50%);
-            color: var(--vscode-input-placeholderForeground);
-            font-size: 14px;
-            pointer-events: none;
-            opacity: 0.7;
-            transition: all 0.2s ease;
-        }
-        
-        .mic-icon.active {
-            color: #ff6b35;
-            opacity: 1;
-            pointer-events: auto;
-            cursor: pointer;
-        }
-        
-        .mic-icon.recording {
-            color: #ff3333;
-            animation: pulse 1.5s infinite;
-        }
-        
-        .mic-icon.processing {
-            color: #ff6b35;
-            animation: spin 1s linear infinite;
-        }
-        
         @keyframes spin {
-            0% { transform: translateY(-50%) rotate(0deg); }
-            100% { transform: translateY(-50%) rotate(360deg); }
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
         }
         
         .input-wrapper:focus-within {
@@ -1617,6 +1652,55 @@ function getReviewGateHTML(title = "Review Gate", mcpIntegration = false) {
             box-shadow: 0 0 0 2px rgba(0, 123, 255, 0.4) !important;
             transition: box-shadow 0.2s ease;
         }
+
+        .button-icon {
+            position: relative;
+            color: inherit;
+        }
+
+        .button-icon::before {
+            content: '';
+            display: block;
+            width: var(--icon-size, 16px);
+            height: var(--icon-size, 16px);
+            background-color: currentColor;
+            mask-repeat: no-repeat;
+            mask-position: center;
+            mask-size: contain;
+            -webkit-mask-repeat: no-repeat;
+            -webkit-mask-position: center;
+            -webkit-mask-size: contain;
+        }
+
+        .icon-microphone::before {
+            mask-image: url('${WEBVIEW_ICON_URIS.microphone}');
+            -webkit-mask-image: url('${WEBVIEW_ICON_URIS.microphone}');
+        }
+
+        .icon-stop::before {
+            mask-image: url('${WEBVIEW_ICON_URIS.stop}');
+            -webkit-mask-image: url('${WEBVIEW_ICON_URIS.stop}');
+        }
+
+        .icon-spinner::before {
+            mask-image: url('${WEBVIEW_ICON_URIS.spinner}');
+            -webkit-mask-image: url('${WEBVIEW_ICON_URIS.spinner}');
+        }
+
+        .icon-image::before {
+            mask-image: url('${WEBVIEW_ICON_URIS.image}');
+            -webkit-mask-image: url('${WEBVIEW_ICON_URIS.image}');
+        }
+
+        .icon-send::before {
+            mask-image: url('${WEBVIEW_ICON_URIS.send}');
+            -webkit-mask-image: url('${WEBVIEW_ICON_URIS.send}');
+        }
+
+        .icon-close::before {
+            mask-image: url('${WEBVIEW_ICON_URIS.close}');
+            -webkit-mask-image: url('${WEBVIEW_ICON_URIS.close}');
+        }
         
         .attach-button {
             background: none;
@@ -1633,7 +1717,11 @@ function getReviewGateHTML(title = "Review Gate", mcpIntegration = false) {
             justify-content: center;
             transition: all 0.2s ease;
         }
-        
+
+        .attach-button::before {
+            margin: 0 auto;
+        }
+
         .attach-button:hover {
             background: var(--vscode-button-hoverBackground);
             transform: scale(1.1);
@@ -1658,6 +1746,10 @@ function getReviewGateHTML(title = "Review Gate", mcpIntegration = false) {
             justify-content: center;
             transition: all 0.2s ease;
             font-size: 14px;
+        }
+
+        .send-button::before {
+            margin: 0 auto;
         }
         
         .send-button:hover {
@@ -1731,17 +1823,24 @@ function getReviewGateHTML(title = "Review Gate", mcpIntegration = false) {
         }
         
         body.drag-over::after {
-            content: '\\f093';
+            content: '';
             position: fixed;
             top: 50%;
             left: 50%;
             transform: translate(-50%, -50%) translate(-120px, 0);
-            color: var(--vscode-badge-foreground);
-            font-size: 16px;
+            width: 18px;
+            height: 18px;
+            background-color: var(--vscode-badge-foreground);
             z-index: 1001;
             pointer-events: none;
-            font-family: 'Font Awesome 6 Free';
-            font-weight: 900;
+            mask-image: url('${WEBVIEW_ICON_URIS.drop}');
+            mask-repeat: no-repeat;
+            mask-position: center;
+            mask-size: contain;
+            -webkit-mask-image: url('${WEBVIEW_ICON_URIS.drop}');
+            -webkit-mask-repeat: no-repeat;
+            -webkit-mask-position: center;
+            -webkit-mask-size: contain;
         }
         
         /* Image preview styling */
@@ -1783,6 +1882,11 @@ function getReviewGateHTML(title = "Review Gate", mcpIntegration = false) {
             font-size: 10px;
             transition: all 0.2s ease;
             flex-shrink: 0;
+            --icon-size: 10px;
+        }
+
+        .remove-image-btn::before {
+            margin: 0 auto;
         }
         
         .remove-image-btn:hover {
@@ -1794,12 +1898,78 @@ function getReviewGateHTML(title = "Review Gate", mcpIntegration = false) {
         .remove-image-btn:active {
             transform: scale(0.95);
         }
+
+        .image-preview-image {
+            display: block;
+            max-width: 200px;
+            max-height: 200px;
+            border-radius: 8px;
+            margin-top: 8px;
+        }
+
+        .image-meta {
+            margin-top: 8px;
+            font-size: 12px;
+            opacity: 0.7;
+        }
+
+        .mic-icon,
+        .attach-button,
+        .send-button,
+        .remove-image-btn {
+            appearance: none;
+            -webkit-appearance: none;
+        }
+
+        .mic-icon {
+            position: absolute;
+            left: 12px;
+            top: 50%;
+            transform: translateY(-50%);
+            color: var(--vscode-input-placeholderForeground);
+            pointer-events: none;
+            opacity: 0.7;
+            transition: all 0.2s ease;
+            background: none;
+            border: none;
+            padding: 0;
+            margin: 0;
+            width: 18px;
+            height: 18px;
+            cursor: pointer;
+        }
+
+        .mic-icon.active {
+            color: #ff6b35;
+            pointer-events: auto;
+        }
+
+        .mic-icon.recording {
+            color: #ff3333;
+            animation: pulse 1.5s infinite;
+        }
+
+        .mic-icon.processing {
+            color: #ff6b35;
+        }
+
+        .mic-icon.processing::before {
+            animation: spin 1s linear infinite;
+        }
+
+        .mic-icon:focus-visible,
+        .attach-button:focus-visible,
+        .send-button:focus-visible,
+        .remove-image-btn:focus-visible {
+            outline: 1px solid var(--vscode-focusBorder);
+            outline-offset: 2px;
+        }
     </style>
 </head>
 <body>
     <div class="review-container">
         <div class="review-header">
-            <div class="review-title">${title}</div>
+            <div class="review-title" id="reviewTitle"></div>
             <div class="status-indicator" id="statusIndicator"></div>
             <div class="mcp-status" id="mcpStatus">Checking MCP...</div>
             <div class="review-author">by Lakshman Turlapati</div>
@@ -1820,21 +1990,19 @@ function getReviewGateHTML(title = "Review Gate", mcpIntegration = false) {
         
         <div class="input-container" id="inputContainer">
             <div class="input-wrapper">
-                <i id="micIcon" class="fas fa-microphone mic-icon active" title="Click to speak"></i>
-                <textarea id="messageInput" class="message-input" placeholder="${mcpIntegration ? 'Cursor Agent is waiting for your response...' : 'Type your review or feedback...'}" rows="1"></textarea>
-                <button id="attachButton" class="attach-button" title="Upload image">
-                    <i class="fas fa-image"></i>
-                </button>
+                <button id="micIcon" class="mic-icon button-icon icon-microphone active" type="button"></button>
+                <textarea id="messageInput" class="message-input" placeholder="" rows="1"></textarea>
+                <button id="attachButton" class="attach-button button-icon icon-image" type="button"></button>
             </div>
-            <button id="sendButton" class="send-button" title="Send ${mcpIntegration ? 'response to Agent' : 'review'}">
-                <i class="fas fa-arrow-up"></i>
-            </button>
+            <button id="sendButton" class="send-button button-icon icon-send" type="button"></button>
         </div>
     </div>
 
-    <script>
+    <script nonce="${nonce}">
+        const popupConfig = ${popupConfig};
         const vscode = acquireVsCodeApi();
         
+        const reviewTitle = document.getElementById('reviewTitle');
         const messagesContainer = document.getElementById('messages');
         const messageInput = document.getElementById('messageInput');
         const sendButton = document.getElementById('sendButton');
@@ -1847,10 +2015,114 @@ function getReviewGateHTML(title = "Review Gate", mcpIntegration = false) {
         
         let messageCount = 0;
         let mcpActive = true; // Default to true for better UX
-        let mcpIntegration = ${mcpIntegration};
+        let mcpIntegration = Boolean(popupConfig.mcpIntegration);
         let attachedImages = []; // Store uploaded images
         let isRecording = false;
         let mediaRecorder = null;
+
+        function setElementLabel(element, text) {
+            element.title = text;
+            element.setAttribute('aria-label', text);
+        }
+
+        function setInputPlaceholder(overrideText = null) {
+            if (typeof overrideText === 'string') {
+                messageInput.placeholder = overrideText;
+                return;
+            }
+
+            if (!mcpActive) {
+                messageInput.placeholder = popupConfig.placeholders.inactive;
+                return;
+            }
+
+            const baseText = mcpIntegration
+                ? popupConfig.placeholders.mcpBase
+                : popupConfig.placeholders.defaultBase;
+            messageInput.placeholder = attachedImages.length > 0
+                ? baseText + '... ' + attachedImages.length + ' image(s) attached'
+                : baseText + '...';
+        }
+
+        function setMicIconState(iconName, stateClass = '', titleText = popupConfig.titles.mic) {
+            let className = 'mic-icon button-icon active icon-' + iconName;
+            if (stateClass) {
+                className += ' ' + stateClass;
+            }
+
+            micIcon.className = className;
+            setElementLabel(micIcon, titleText);
+        }
+
+        function createElement(tagName, className = '', text = null) {
+            const element = document.createElement(tagName);
+            if (className) {
+                element.className = className;
+            }
+            if (text !== null) {
+                element.textContent = text;
+            }
+            return element;
+        }
+
+        function isSafeImageDataUrl(dataUrl) {
+            return typeof dataUrl === 'string' && /^data:image\\/[a-z0-9.+-]+;base64,/i.test(dataUrl);
+        }
+
+        function formatImageSize(size) {
+            const numericSize = Number(size);
+            if (!Number.isFinite(numericSize) || numericSize < 0) {
+                return '0.0';
+            }
+
+            return (numericSize / 1024).toFixed(1);
+        }
+
+        function createImagePreviewNode(imageData, imageId) {
+            const imagePreview = createElement('div', 'message system image-preview');
+            imagePreview.setAttribute('data-image-id', imageId);
+
+            const imageContainer = createElement('div', 'message-bubble image-container');
+            const imageHeader = createElement('div', 'image-header');
+            const imageFileName = createElement('span', 'image-filename', String(imageData.fileName || 'uploaded-image'));
+            const removeButton = createElement('button', 'remove-image-btn button-icon icon-close');
+            removeButton.type = 'button';
+            setElementLabel(removeButton, popupConfig.titles.removeImage);
+            removeButton.addEventListener('click', () => {
+                removeImage(imageId);
+            });
+
+            const previewImage = document.createElement('img');
+            previewImage.className = 'image-preview-image';
+            previewImage.alt = imageData.fileName
+                ? 'Uploaded image: ' + imageData.fileName
+                : 'Uploaded image';
+            previewImage.src = imageData.dataUrl;
+
+            const imageMeta = createElement(
+                'div',
+                'image-meta',
+                'Image ready to send (' + formatImageSize(imageData.size) + ' KB)'
+            );
+            const timeDiv = createElement('div', 'message-time', new Date().toLocaleTimeString());
+
+            imageHeader.appendChild(imageFileName);
+            imageHeader.appendChild(removeButton);
+            imageContainer.appendChild(imageHeader);
+            imageContainer.appendChild(previewImage);
+            imageContainer.appendChild(imageMeta);
+            imagePreview.appendChild(imageContainer);
+            imagePreview.appendChild(timeDiv);
+
+            return imagePreview;
+        }
+
+        document.title = popupConfig.title;
+        reviewTitle.textContent = popupConfig.title;
+        setElementLabel(attachButton, popupConfig.titles.attach);
+        setElementLabel(sendButton, popupConfig.titles.send);
+        setMicIconState('microphone', '', popupConfig.titles.micReady);
+        setInputPlaceholder();
         
         function updateMcpStatus(active) {
             mcpActive = active;
@@ -1862,7 +2134,8 @@ function getReviewGateHTML(title = "Review Gate", mcpIntegration = false) {
                 messageInput.disabled = false;
                 sendButton.disabled = false;
                 attachButton.disabled = false;
-                messageInput.placeholder = mcpIntegration ? 'Cursor Agent is waiting for your response...' : 'Type your review or feedback...';
+                micIcon.disabled = false;
+                setInputPlaceholder();
             } else {
                 statusIndicator.classList.remove('active');
                 mcpStatus.textContent = 'MCP Inactive';
@@ -1870,7 +2143,8 @@ function getReviewGateHTML(title = "Review Gate", mcpIntegration = false) {
                 messageInput.disabled = true;
                 sendButton.disabled = true;
                 attachButton.disabled = true;
-                messageInput.placeholder = 'MCP server is not active. Please start the server to enable input.';
+                micIcon.disabled = true;
+                setInputPlaceholder();
             }
         }
         
@@ -1966,6 +2240,7 @@ function getReviewGateHTML(title = "Review Gate", mcpIntegration = false) {
             
             messageInput.value = '';
             attachedImages = []; // Clear attached images
+            updateImageCounter();
             adjustTextareaHeight();
             
             // Ensure mic icon is visible after sending message
@@ -1980,28 +2255,29 @@ function getReviewGateHTML(title = "Review Gate", mcpIntegration = false) {
         }
         
         function handleImageUploaded(imageData) {
-            // Add image to attachments with unique ID
-            const imageId = 'img_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+            if (!imageData || !isSafeImageDataUrl(imageData.dataUrl)) {
+                addMessage('❌ Invalid image data received', 'system', null, true);
+                return;
+            }
+
+            const imageId = 'img_' + Date.now() + '_' + Math.random().toString(36).slice(2, 11);
             imageData.id = imageId;
             attachedImages.push(imageData);
-            
-            // Show image preview in messages with remove button
+
             const imagePreview = document.createElement('div');
             imagePreview.className = 'message system image-preview';
             imagePreview.setAttribute('data-image-id', imageId);
-            imagePreview.innerHTML = \`
-                <div class="message-bubble image-container">
-                    <div class="image-header">
-                        <span class="image-filename">\${imageData.fileName}</span>
-                        <button class="remove-image-btn" onclick="removeImage('\${imageId}')" title="Remove image">
-                            <i class="fas fa-times"></i>
-                        </button>
-                    </div>
-                    <img src="\${imageData.dataUrl}" style="max-width: 200px; max-height: 200px; border-radius: 8px; margin-top: 8px;" alt="Uploaded image">
-                    <div style="margin-top: 8px; font-size: 12px; opacity: 0.7;">Image ready to send (\${(imageData.size / 1024).toFixed(1)} KB)</div>
-                </div>
-                <div class="message-time">\${new Date().toLocaleTimeString()}</div>
-            \`;
+            imagePreview.innerHTML = [
+                '<div class="message-bubble image-container">',
+                '    <div class="image-header">',
+                '        <span class="image-filename">' + imageData.fileName + '</span>',
+                '        <button class="remove-image-btn button-icon icon-close" onclick="removeImage(\\'' + imageId + '\\')" title="Remove image" aria-label="Remove image" type="button"></button>',
+                '    </div>',
+                '    <img src="' + imageData.dataUrl + '" class="image-preview-image" alt="Uploaded image">',
+                '    <div class="image-meta">Image ready to send (' + formatImageSize(imageData.size) + ' KB)</div>',
+                '</div>',
+                '<div class="message-time">' + new Date().toLocaleTimeString() + '</div>'
+            ].join('');
             messagesContainer.appendChild(imagePreview);
             messagesContainer.scrollTop = messagesContainer.scrollHeight;
             
@@ -2031,14 +2307,7 @@ function getReviewGateHTML(title = "Review Gate", mcpIntegration = false) {
         
         // Update image counter in input placeholder
         function updateImageCounter() {
-            const count = attachedImages.length;
-            const baseText = mcpIntegration ? 'Cursor Agent is waiting for your response' : 'Type your review or feedback';
-            
-            if (count > 0) {
-                messageInput.placeholder = \`\${baseText}... \${count} image(s) attached\`;
-            } else {
-                messageInput.placeholder = \`\${baseText}...\`;
-            }
+            setInputPlaceholder();
         }
         
         // Handle paste events for images with debounce to prevent duplicates
@@ -2200,8 +2469,8 @@ function getReviewGateHTML(title = "Review Gate", mcpIntegration = false) {
                 micIcon.style.opacity = '0.7';
                 micIcon.style.pointerEvents = 'auto';
                 // Ensure proper mic icon state
-                if (!micIcon.classList.contains('fa-microphone')) {
-                    micIcon.className = 'fas fa-microphone mic-icon active';
+                if (!micIcon.classList.contains('icon-microphone')) {
+                    setMicIconState('microphone', '', popupConfig.titles.mic);
                 }
             }
         }
@@ -2225,8 +2494,7 @@ function getReviewGateHTML(title = "Review Gate", mcpIntegration = false) {
             
             isRecording = true;
             // Change icon to stop icon and add recording state
-            micIcon.className = 'fas fa-stop mic-icon recording';
-            micIcon.title = 'Recording... Click to stop';
+            setMicIconState('stop', 'recording', popupConfig.titles.recording);
             console.log('🎤 Recording started - UI updated to stop icon');
         }
         
@@ -2239,18 +2507,16 @@ function getReviewGateHTML(title = "Review Gate", mcpIntegration = false) {
             
             isRecording = false;
             // Change to processing state
-            micIcon.className = 'fas fa-spinner mic-icon processing';
-            micIcon.title = 'Processing speech...';
-            messageInput.placeholder = 'Processing speech... Please wait';
+            setMicIconState('spinner', 'processing', popupConfig.titles.processing);
+            setInputPlaceholder(popupConfig.placeholders.processing);
             console.log('🔄 Recording stopped - processing speech...');
         }
         
         function resetMicIcon() {
             // Reset to normal microphone state
             isRecording = false; // Ensure recording flag is cleared
-            micIcon.className = 'fas fa-microphone mic-icon active';
-            micIcon.title = 'Click to speak';
-            messageInput.placeholder = mcpIntegration ? 'Cursor Agent is waiting for your response...' : 'Type your review or feedback...';
+            setMicIconState('microphone', '', popupConfig.titles.mic);
+            setInputPlaceholder();
             
             // Force visibility based on input state
             if (messageInput.value.trim().length === 0) {
@@ -2315,7 +2581,7 @@ function getReviewGateHTML(title = "Review Gate", mcpIntegration = false) {
                     addMessage(message.text, message.type || 'system', message.toolData, message.plain || false);
                     if (message.mcpIntegration) {
                         mcpIntegration = true;
-                        messageInput.placeholder = 'Cursor Agent is waiting for your response...';
+                        setInputPlaceholder();
                     }
                     break;
                 case 'focus':
@@ -2340,6 +2606,7 @@ function getReviewGateHTML(title = "Review Gate", mcpIntegration = false) {
                         console.log('✅ Text injected into the input');
                         // Reset mic icon after successful transcription
                         resetMicIcon();
+                        toggleMicIcon();
                     } else if (message.error) {
                         console.error('❌ Speech transcription error:', message.error);
                         
@@ -2347,10 +2614,8 @@ function getReviewGateHTML(title = "Review Gate", mcpIntegration = false) {
                         addSpeechError(message.error);
                         
                         // Also show in placeholder briefly
-                        const originalPlaceholder = messageInput.placeholder;
-                        messageInput.placeholder = 'Speech failed - try again';
+                        setInputPlaceholder(popupConfig.placeholders.speechFailed);
                         setTimeout(() => {
-                            messageInput.placeholder = originalPlaceholder;
                             resetMicIcon();
                         }, 3000);
                     } else {
@@ -2359,10 +2624,8 @@ function getReviewGateHTML(title = "Review Gate", mcpIntegration = false) {
                         // Show helpful message in chat
                         addMessage('🎤 No speech detected - please speak clearly and try again', 'system', null, true);
                         
-                        const originalPlaceholder = messageInput.placeholder;
-                        messageInput.placeholder = 'No speech detected - try again';
+                        setInputPlaceholder(popupConfig.placeholders.noSpeech);
                         setTimeout(() => {
-                            messageInput.placeholder = originalPlaceholder;
                             resetMicIcon();
                         }, 3000);
                     }
@@ -2375,8 +2638,7 @@ function getReviewGateHTML(title = "Review Gate", mcpIntegration = false) {
             // Always available since we're using SoX directly
             micIcon.style.opacity = '0.7';
             micIcon.style.pointerEvents = 'auto';
-            micIcon.title = 'Click to speak (SoX recording)';
-            micIcon.classList.add('active');
+            setMicIconState('microphone', '', popupConfig.titles.micReady);
             console.log('Speech recording available via SoX direct recording');
             
             // Ensure mic icon visibility on initialization
@@ -2385,7 +2647,7 @@ function getReviewGateHTML(title = "Review Gate", mcpIntegration = false) {
                 micIcon.style.pointerEvents = 'auto';
             }
         }
-        
+
         // Make removeImage globally accessible for onclick handlers
         window.removeImage = removeImage;
         
