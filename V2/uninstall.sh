@@ -24,6 +24,9 @@ log_warning() { echo -e "${YELLOW}WARNING: $1${NC}"; }
 log_step() { echo -e "${WHITE}$1${NC}"; }
 log_header() { echo -e "${BLUE}$1${NC}"; }
 
+# Get script directory
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+
 log_header "Review Gate V2 - Uninstaller"
 log_header "============================="
 echo ""
@@ -48,11 +51,17 @@ fi
 CURSOR_MCP_FILE="$HOME/.cursor/mcp.json"
 if [[ -f "$CURSOR_MCP_FILE" ]]; then
     # Create backup
-    cp "$CURSOR_MCP_FILE" "$CURSOR_MCP_FILE.backup"
-    
-    # Remove review-gate-v2 entry (simple approach - remove entire config)
-    echo '{"mcpServers":{}}' > "$CURSOR_MCP_FILE"
-    log_success "Removed MCP configuration (backup created)"
+    MCP_BACKUP_FILE="$CURSOR_MCP_FILE.backup"
+    cp "$CURSOR_MCP_FILE" "$MCP_BACKUP_FILE"
+
+    if python3 "$SCRIPT_DIR/update_mcp_config.py" remove --config "$CURSOR_MCP_FILE" --server-name review-gate-v2; then
+        log_success "Removed review-gate-v2 from MCP configuration (backup created)"
+    else
+        cp "$MCP_BACKUP_FILE" "$CURSOR_MCP_FILE"
+        log_error "Failed to update MCP configuration safely"
+        log_info "Original MCP configuration restored from backup"
+        exit 1
+    fi
 fi
 
 # Remove global rule - Cross-platform directory detection
