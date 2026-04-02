@@ -139,22 +139,23 @@ function assertSafeRuntimePath(targetPath, options = {}) {
     const runtimeRoot = fs.realpathSync.native(getRuntimeRoot());
     const normalizedPath = path.resolve(targetPath);
 
-    if (!isPathWithinRuntimeRoot(normalizedPath, runtimeRoot)) {
-        throw new Error(`Runtime path escapes Review Gate root: ${targetPath}`);
-    }
-
     let chainTarget = normalizedPath;
     if (options.allowMissing && !fs.existsSync(normalizedPath)) {
         chainTarget = path.dirname(normalizedPath);
     }
 
-    let currentPath = chainTarget;
+    const resolvedChainTarget = fs.realpathSync.native(chainTarget);
+    if (!isPathWithinRuntimeRoot(resolvedChainTarget, runtimeRoot)) {
+        throw new Error(`Runtime path escapes Review Gate root: ${targetPath}`);
+    }
+
+    let currentPath = resolvedChainTarget;
     while (true) {
         const stats = fs.lstatSync(currentPath);
         if (stats.isSymbolicLink()) {
             throw new Error(`Refusing symlinked runtime path: ${currentPath}`);
         }
-        if (currentPath === normalizedPath) {
+        if (currentPath === resolvedChainTarget) {
             if (options.expectFile && !stats.isFile()) {
                 throw new Error(`Refusing non-regular runtime file: ${currentPath}`);
             }
@@ -170,11 +171,6 @@ function assertSafeRuntimePath(targetPath, options = {}) {
             break;
         }
         currentPath = parentPath;
-    }
-
-    const resolvedPath = fs.realpathSync.native(chainTarget);
-    if (!isPathWithinRuntimeRoot(resolvedPath, runtimeRoot)) {
-        throw new Error(`Resolved runtime path escapes Review Gate root: ${targetPath}`);
     }
 
     return normalizedPath;
