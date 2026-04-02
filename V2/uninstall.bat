@@ -108,9 +108,11 @@ if exist "%MCP_CONFIG%" (
 
 REM Remove global rule (if exists) - Windows-specific directory
 set "CURSOR_RULES_DIR=%APPDATA%\Cursor\User\rules"
-if exist "%CURSOR_RULES_DIR%\ReviewGate.mdc" (
-    del "%CURSOR_RULES_DIR%\ReviewGate.mdc"
-    %log_success% Removed global rule%NC%
+set "RULE_FILENAME=ReviewGateV2.mdc"
+set "RULE_FILE=%CURSOR_RULES_DIR%\!RULE_FILENAME!"
+if exist "!RULE_FILE!" (
+    del "!RULE_FILE!"
+    %log_success% Removed global rule: !RULE_FILE!%NC%
 )
 
 REM Clean up temp files from both locations
@@ -161,7 +163,7 @@ echo.
 %log_header% What was removed:%NC%
 %log_step%    - Installation directory: !REVIEW_GATE_DIR!%NC%
 %log_step%    - MCP server configuration entry%NC%
-%log_step%    - Global rule file: !CURSOR_RULES_DIR!\ReviewGate.mdc%NC%
+%log_step%    - Global rule file: !RULE_FILE!%NC%
 %log_step%    - Temporary files from system directories%NC%
 if "!EXTENSION_REMOVED!" equ "true" (
     %log_step%    - Cursor extension (removed automatically)%NC%

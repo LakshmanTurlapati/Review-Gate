@@ -284,14 +284,17 @@ if defined EXTENSION_FILE (
 
 REM Install global rule (optional) - Windows-specific directory
 set "CURSOR_RULES_DIR=%APPDATA%\Cursor\User\rules"
-if exist "%SCRIPT_DIR%\ReviewGate.mdc" (
+set "RULE_FILENAME=ReviewGateV2.mdc"
+set "RULE_SOURCE_FILE=%SCRIPT_DIR%\!RULE_FILENAME!"
+set "INSTALLED_RULE_FILE=!CURSOR_RULES_DIR!\!RULE_FILENAME!"
+if exist "!RULE_SOURCE_FILE!" (
     %log_progress% Installing global rule...%NC%
     if not exist "!CURSOR_RULES_DIR!" mkdir "!CURSOR_RULES_DIR!"
-    copy "%SCRIPT_DIR%\ReviewGate.mdc" "!CURSOR_RULES_DIR!\" >nul
-    %log_success% Global rule installed to: !CURSOR_RULES_DIR!%NC%
-) else if exist "%SCRIPT_DIR%\ReviewGate.mdc" (
+    copy "!RULE_SOURCE_FILE!" "!INSTALLED_RULE_FILE!" >nul
+    %log_success% Global rule installed to: !INSTALLED_RULE_FILE!%NC%
+) else if exist "!RULE_SOURCE_FILE!" (
     %log_warning% Could not determine Cursor rules directory%NC%
-    %log_info% Global rule available at: %SCRIPT_DIR%\ReviewGate.mdc%NC%
+    %log_info% Global rule available at: !RULE_SOURCE_FILE!%NC%
 )
 
 REM Clean up any existing temp files
@@ -308,7 +311,7 @@ echo.
 %log_step%    - MCP Server: !REVIEW_GATE_DIR!%NC%
 %log_step%    - MCP Config: !CURSOR_MCP_FILE!%NC%
 %log_step%    - Extension: !INSTALLED_EXTENSION_FILE!%NC%
-%log_step%    - Global Rule: !CURSOR_RULES_DIR!\ReviewGate.mdc%NC%
+%log_step%    - Global Rule: !INSTALLED_RULE_FILE!%NC%
 echo.
 %log_header% Testing Your Installation:%NC%
 %log_step% 1. Restart Cursor completely%NC%

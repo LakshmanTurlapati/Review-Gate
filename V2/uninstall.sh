@@ -62,9 +62,11 @@ elif [[ "$(uname)" == "Linux" ]]; then
     CURSOR_RULES_DIR="$HOME/.config/Cursor/User/rules"
 fi
 
-if [[ -n "$CURSOR_RULES_DIR" ]] && [[ -f "$CURSOR_RULES_DIR/ReviewGate.mdc" ]]; then
-    rm "$CURSOR_RULES_DIR/ReviewGate.mdc"
-    log_success "Removed global rule"
+RULE_FILENAME="ReviewGateV2.mdc"
+RULE_FILE="$CURSOR_RULES_DIR/$RULE_FILENAME"
+if [[ -n "$CURSOR_RULES_DIR" ]] && [[ -f "$RULE_FILE" ]]; then
+    rm "$RULE_FILE"
+    log_success "Removed global rule: $RULE_FILE"
 fi
 
 # Clean up temp files from both old (/tmp) and new (system temp) locations
@@ -101,7 +103,7 @@ echo ""
 log_header "What was removed:"
 log_step "   - Installation directory: $REVIEW_GATE_DIR"
 log_step "   - MCP server configuration entry"
-log_step "   - Global rule file: $CURSOR_RULES_DIR/ReviewGate.mdc"
+log_step "   - Global rule file: $RULE_FILE"
 log_step "   - Temporary files from system directories"
 if [[ "$EXTENSION_REMOVED" == true ]]; then
     log_step "   - Cursor extension (removed automatically)"

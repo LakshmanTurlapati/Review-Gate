@@ -97,12 +97,13 @@ if (Test-Path $CursorMcpFile) {
 }
 
 # Remove global rule
-$ruleFile = Join-Path $CursorRulesDir "ReviewGate.mdc"
+$RuleFileName = "ReviewGateV2.mdc"
+$ruleFile = Join-Path $CursorRulesDir $RuleFileName
 if (Test-Path $ruleFile) {
     Write-Progress-Log "Removing global rule..."
     try {
         Remove-Item $ruleFile -Force
-        Write-Success-Log "Global rule removed"
+        Write-Success-Log "Global rule removed: $ruleFile"
     } catch {
         Write-Error-Log "Failed to remove global rule"
         Write-Info-Log "Please remove manually: $ruleFile"
@@ -159,7 +160,7 @@ Write-Host ""
 Write-Header-Log "What was removed:"
 Write-Step-Log "   - Installation directory: $ReviewGateDir"
 Write-Step-Log "   - MCP server configuration entry"
-Write-Step-Log "   - Global rule file"
+Write-Step-Log "   - Global rule file: $ruleFile"
 Write-Step-Log "   - Temporary files"
 Write-Host ""
 Write-Header-Log "What remains (if any):"

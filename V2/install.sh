@@ -377,14 +377,16 @@ elif [[ "$OS" == "linux" ]]; then
     CURSOR_RULES_DIR="$HOME/.config/Cursor/User/rules"
 fi
 
-if [[ -f "$SCRIPT_DIR/ReviewGate.mdc" ]] && [[ -n "$CURSOR_RULES_DIR" ]]; then
+RULE_FILENAME="ReviewGateV2.mdc"
+RULE_SOURCE_FILE="$SCRIPT_DIR/$RULE_FILENAME"
+if [[ -f "$RULE_SOURCE_FILE" ]] && [[ -n "$CURSOR_RULES_DIR" ]]; then
     log_progress "Installing global rule..."
     mkdir -p "$CURSOR_RULES_DIR"
-    cp "$SCRIPT_DIR/ReviewGate.mdc" "$CURSOR_RULES_DIR/"
-    log_success "Global rule installed to: $CURSOR_RULES_DIR"
-elif [[ -f "$SCRIPT_DIR/ReviewGate.mdc" ]]; then
+    cp "$RULE_SOURCE_FILE" "$CURSOR_RULES_DIR/$RULE_FILENAME"
+    log_success "Global rule installed to: $CURSOR_RULES_DIR/$RULE_FILENAME"
+elif [[ -f "$RULE_SOURCE_FILE" ]]; then
     log_warning "Could not determine Cursor rules directory for this platform"
-    log_info "Global rule available at: $SCRIPT_DIR/ReviewGate.mdc"
+    log_info "Global rule available at: $RULE_SOURCE_FILE"
 fi
 
 # Clean up any existing temp files
@@ -400,7 +402,7 @@ echo -e "${BLUE}Installation Summary:${NC}"
 log_step "   - MCP Server: $REVIEW_GATE_DIR"
 log_step "   - MCP Config: $CURSOR_MCP_FILE"
 log_step "   - Extension: $INSTALLED_EXTENSION_FILE"
-log_step "   - Global Rule: $CURSOR_RULES_DIR/ReviewGate.mdc"
+log_step "   - Global Rule: $CURSOR_RULES_DIR/$RULE_FILENAME"
 echo ""
 echo -e "${BLUE}Testing Your Installation:${NC}"
 log_step "1. Restart Cursor completely"

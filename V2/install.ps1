@@ -385,15 +385,17 @@ if ($ExtensionFile) {
 
 # Install global rule (optional) - Windows-specific directory
 $CursorRulesDir = Join-Path $env:APPDATA "Cursor\User\rules"
-$ruleFile = Join-Path $ScriptDir "ReviewGate.mdc"
-if (Test-Path $ruleFile) {
+$RuleFileName = "ReviewGateV2.mdc"
+$RuleSourceFile = Join-Path $ScriptDir $RuleFileName
+$InstalledRuleFile = Join-Path $CursorRulesDir $RuleFileName
+if (Test-Path $RuleSourceFile) {
     Write-Progress-Log "Installing global rule..."
     New-Item -Path $CursorRulesDir -ItemType Directory -Force | Out-Null
-    Copy-Item $ruleFile $CursorRulesDir -Force
-    Write-Success-Log "Global rule installed to: $CursorRulesDir"
-} elseif (Test-Path $ruleFile) {
+    Copy-Item $RuleSourceFile $InstalledRuleFile -Force
+    Write-Success-Log "Global rule installed to: $InstalledRuleFile"
+} elseif (Test-Path $RuleSourceFile) {
     Write-Warning-Log "Could not determine Cursor rules directory"
-    Write-Info-Log "Global rule available at: $ruleFile"
+    Write-Info-Log "Global rule available at: $RuleSourceFile"
 }
 
 # Clean up any existing temp files
@@ -410,7 +412,7 @@ Write-Header-Log "Installation Summary:"
 Write-Step-Log "   • MCP Server: $ReviewGateDir"
 Write-Step-Log "   • MCP Config: $CursorMcpFile"
 Write-Step-Log "   • Extension: $InstalledExtensionFile"
-Write-Step-Log "   • Global Rule: $CursorRulesDir\ReviewGate.mdc"
+Write-Step-Log "   • Global Rule: $InstalledRuleFile"
 Write-Host ""
 Write-Header-Log "Testing Your Installation:"
 Write-Step-Log "1. Restart Cursor completely"
