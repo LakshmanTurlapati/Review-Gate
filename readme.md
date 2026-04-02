@@ -132,6 +132,17 @@ npm run package
 
 Both commands read `V2/release-manifest.json`, keep `V2/ReviewGateV2.mdc` as the supported rule file, and target the same canonical VSIX path under `V2/`.
 
+#### GitHub Actions Build
+
+The repo also includes `.github/workflows/build-vsix.yml` for CI packaging. On pushes to `main`, pull requests, or manual dispatch, it:
+
+1. Validates `V2/release-manifest.json`
+2. Runs `python3 scripts/run_review_gate_regression_checks.py --suite release-surface`
+3. Builds the canonical VSIX with `npm run package`
+4. Uploads `V2/review-gate-v2-2.7.3.vsix` as a workflow artifact
+
+This workflow is intentionally build-only for now. It does not publish a GitHub Release, and it does not change the installation steps above.
+
 #### Alternative: Manual Extension Installation
 
 If the automatic installer doesn't install the extension properly, you can install it manually:

@@ -1,0 +1,59 @@
+name: Build VSIX
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-vsix:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Read canonical release metadata
+        id: release_meta
+        run: |
+          echo "artifact_basename=$(python3 scripts/package_review_gate_vsix.py --field artifact_basename)" >> "$GITHUB_OUTPUT"
+          echo "vsix_path=$(python3 scripts/package_review_gate_vsix.py --field canonical_vsix_path)" >> "$GITHUB_OUTPUT"
+
+      - name: Validate release manifest
+        run: python3 scripts/package_review_gate_vsix.py --check
+
+      - name: Run release-surface regression suite
+        run: python3 scripts/run_review_gate_regression_checks.py --suite release-surface
+
+      - name: Install extension packaging dependencies
+        working-directory: V2/cursor-extension
+        run: npm install --no-fund --no-audit
+
+      - name: Build canonical VSIX
+        working-directory: V2/cursor-extension
+        run: npm run package
+
+      - name: Confirm canonical VSIX exists
+        run: test -f "${{ steps.release_meta.outputs.vsix_path }}"
+
+      - name: Upload VSIX artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.release_meta.outputs.artifact_basename }}
+          path: ${{ steps.release_meta.outputs.vsix_path }}
+          if-no-files-found: error
