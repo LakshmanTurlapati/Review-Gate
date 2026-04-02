@@ -56,12 +56,52 @@ sys.exit(completed.returncode)
 PY
 }
 
+env_flag_enabled() {
+    [[ "${!1:-}" == "1" ]]
+}
+
 # Get script directory
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+SMOKE_MODE=false
+SKIP_DEP_INSTALL=false
+SKIP_EXTENSION_INSTALL=false
+SKIP_SERVER_SMOKE=false
+
+if env_flag_enabled REVIEW_GATE_SMOKE; then
+    SMOKE_MODE=true
+fi
+
+if env_flag_enabled REVIEW_GATE_SKIP_DEP_INSTALL || [[ "$SMOKE_MODE" == true ]]; then
+    SKIP_DEP_INSTALL=true
+fi
+
+if env_flag_enabled REVIEW_GATE_SKIP_EXTENSION_INSTALL || [[ "$SMOKE_MODE" == true ]]; then
+    SKIP_EXTENSION_INSTALL=true
+fi
+
+if env_flag_enabled REVIEW_GATE_SKIP_SERVER_SMOKE || [[ "$SMOKE_MODE" == true ]]; then
+    SKIP_SERVER_SMOKE=true
+fi
 
 echo -e "${BLUE}Review Gate V2 - One-Click Installation${NC}"
 echo -e "${BLUE}=========================================${NC}"
 echo ""
+
+if [[ "$SMOKE_MODE" == true ]]; then
+    if [[ -z "${REVIEW_GATE_TEST_HOME:-}" ]]; then
+        log_error "REVIEW_GATE_TEST_HOME is required when REVIEW_GATE_SMOKE=1"
+        exit 1
+    fi
+    if [[ -z "${REVIEW_GATE_TEST_INSTALL_DIR:-}" ]]; then
+        log_error "REVIEW_GATE_TEST_INSTALL_DIR is required when REVIEW_GATE_SMOKE=1"
+        exit 1
+    fi
+
+    export HOME="$REVIEW_GATE_TEST_HOME"
+    mkdir -p "$HOME"
+    log_info "Smoke mode enabled with HOME redirected to: $HOME"
+    log_info "Smoke install root redirected to: $REVIEW_GATE_TEST_INSTALL_DIR"
+fi
 
 # Detect operating system
 if [[ "$OSTYPE" == "linux-gnu"* ]]; then
@@ -81,7 +121,7 @@ fi
 log_success "Detected OS: $OS"
 
 # Only install Homebrew on macOS
-if [[ "$OS" == "macos" ]]; then
+if [[ "$OS" == "macos" ]] && [[ "$SKIP_DEP_INSTALL" != true ]]; then
     if ! command -v brew &> /dev/null; then
         log_progress "Installing Homebrew (macOS package manager)..."
         /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
@@ -92,7 +132,9 @@ fi
 
 # Install SoX for speech-to-text
 log_progress "Installing SoX for speech-to-text..."
-if ! command -v sox &> /dev/null; then
+if [[ "$SKIP_DEP_INSTALL" == true ]]; then
+    log_info "Skipping package-manager dependency installation"
+elif ! command -v sox &> /dev/null; then
     if [[ "$OS" == "linux" ]]; then
         sudo apt-get update
         $INSTALL_CMD sox
@@ -117,7 +159,9 @@ SOX_TEST_FILE="$TEMP_DIR/sox_test_$$.wav"
 
 # Validate SoX installation and microphone access
 log_progress "Validating SoX and microphone setup..."
-if command -v sox &> /dev/null; then
+if [[ "$SKIP_DEP_INSTALL" == true ]]; then
+    log_info "Skipping SoX validation in smoke mode"
+elif command -v sox &> /dev/null; then
     SOX_VERSION=$(sox --version 2>&1 | head -n1)
     log_success "SoX found: $SOX_VERSION"
     
@@ -145,8 +189,13 @@ else
 fi
 
 # Create global Cursor extensions directory
-CURSOR_EXTENSIONS_DIR="$HOME/cursor-extensions"
-REVIEW_GATE_DIR="$CURSOR_EXTENSIONS_DIR/review-gate-v2"
+if [[ "$SMOKE_MODE" == true ]]; then
+    REVIEW_GATE_DIR="$REVIEW_GATE_TEST_INSTALL_DIR"
+    CURSOR_EXTENSIONS_DIR="$(dirname "$REVIEW_GATE_DIR")"
+else
+    CURSOR_EXTENSIONS_DIR="$HOME/cursor-extensions"
+    REVIEW_GATE_DIR="$CURSOR_EXTENSIONS_DIR/review-gate-v2"
+fi
 
 log_progress "Creating global installation directory..."
 mkdir -p "$REVIEW_GATE_DIR"
@@ -161,7 +210,7 @@ log_progress "Creating Python virtual environment..."
 cd "$REVIEW_GATE_DIR"
 
 # Install python3-venv on Linux if needed
-if [[ "$OS" == "linux" ]]; then
+if [[ "$OS" == "linux" ]] && [[ "$SKIP_DEP_INSTALL" != true ]]; then
     if ! dpkg -s python3-venv >/dev/null 2>&1; then
         log_progress "Installing Python virtual environment support..."
         sudo apt-get update
@@ -173,32 +222,37 @@ python3 -m venv venv
 VENV_PYTHON="$REVIEW_GATE_DIR/venv/bin/python"
 
 # Activate virtual environment and install dependencies
-log_progress "Installing Python dependencies..."
-source venv/bin/activate
-"$VENV_PYTHON" -m pip install --upgrade pip
-
-# Install dependencies with better error handling
-log_progress "Installing core dependencies (mcp, pillow)..."
-"$VENV_PYTHON" -m pip install "mcp>=1.9.2" "Pillow>=10.0.0" "asyncio" "typing-extensions>=4.14.0"
-
-# Install faster-whisper with platform-specific handling
-log_progress "Installing faster-whisper for speech-to-text..."
-if "$VENV_PYTHON" -m pip install "faster-whisper>=1.0.0"; then
-    log_success "faster-whisper installed successfully"
+if [[ "$SKIP_DEP_INSTALL" == true ]]; then
+    log_info "Skipping Python dependency installation"
 else
-    log_warning "faster-whisper installation failed - trying alternative approach"
-    # Try installing without CUDA dependencies for CPU-only
-    if "$VENV_PYTHON" -m pip install "faster-whisper>=1.0.0" --no-deps; then
-        "$VENV_PYTHON" -m pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
-        log_success "faster-whisper installed with CPU-only dependencies"
+    log_progress "Installing Python dependencies..."
+    source venv/bin/activate
+    "$VENV_PYTHON" -m pip install --upgrade pip
+
+    # Install dependencies with better error handling
+    log_progress "Installing core dependencies (mcp, pillow)..."
+    "$VENV_PYTHON" -m pip install "mcp>=1.9.2" "Pillow>=10.0.0" "asyncio" "typing-extensions>=4.14.0"
+
+    # Install faster-whisper with platform-specific handling
+    log_progress "Installing faster-whisper for speech-to-text..."
+    if "$VENV_PYTHON" -m pip install "faster-whisper>=1.0.0"; then
+        log_success "faster-whisper installed successfully"
     else
-        log_error "faster-whisper installation failed"
-        log_info "Speech-to-text will be disabled"
-        log_info "You can manually install later: \"$VENV_PYTHON\" -m pip install \"faster-whisper>=1.0.0\""
+        log_warning "faster-whisper installation failed - trying alternative approach"
+        # Try installing without CUDA dependencies for CPU-only
+        if "$VENV_PYTHON" -m pip install "faster-whisper>=1.0.0" --no-deps; then
+            "$VENV_PYTHON" -m pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+            log_success "faster-whisper installed with CPU-only dependencies"
+        else
+            log_error "faster-whisper installation failed"
+            log_info "Speech-to-text will be disabled"
+            log_info "You can manually install later: \"$VENV_PYTHON\" -m pip install \"faster-whisper>=1.0.0\""
+        fi
     fi
 fi
-
-deactivate
+if [[ "$SKIP_DEP_INSTALL" != true ]]; then
+    deactivate
+fi
 
 log_success "Python environment created and dependencies installed"
 
@@ -206,6 +260,7 @@ log_success "Python environment created and dependencies installed"
 CURSOR_MCP_FILE="$HOME/.cursor/mcp.json"
 log_progress "Configuring MCP servers..."
 mkdir -p "$HOME/.cursor"
+BACKUP_FILE=""
 
 # Backup existing MCP configuration if it exists
 if [[ -f "$CURSOR_MCP_FILE" ]]; then
@@ -300,12 +355,16 @@ fi
 log_progress "Testing MCP server..."
 cd "$REVIEW_GATE_DIR"
 MCP_TEST_LOG="$TEMP_DIR/mcp_test.log"
-run_with_timeout 5 "$VENV_PYTHON" "$REVIEW_GATE_DIR/review_gate_v2_mcp.py" > "$MCP_TEST_LOG" 2>&1 || true
-
-if grep -q "Review Gate 2.0 server initialized" "$MCP_TEST_LOG"; then
-    log_success "MCP server test successful"
+if [[ "$SKIP_SERVER_SMOKE" == true ]]; then
+    log_info "Skipping MCP server smoke test"
 else
-    log_warning "MCP server test inconclusive (may be normal)"
+    run_with_timeout 5 "$VENV_PYTHON" "$REVIEW_GATE_DIR/review_gate_v2_mcp.py" > "$MCP_TEST_LOG" 2>&1 || true
+
+    if grep -q "Review Gate 2.0 server initialized" "$MCP_TEST_LOG"; then
+        log_success "MCP server test successful"
+    else
+        log_warning "MCP server test inconclusive (may be normal)"
+    fi
 fi
 rm -f "$MCP_TEST_LOG"
 
@@ -332,7 +391,9 @@ if [[ -n "$EXTENSION_FILE" ]]; then
     
     # Try automated installation first
     EXTENSION_INSTALLED=false
-    if command -v cursor &> /dev/null; then
+    if [[ "$SKIP_EXTENSION_INSTALL" == true ]]; then
+        log_info "Skipping automated Cursor extension installation"
+    elif command -v cursor &> /dev/null; then
         log_progress "Attempting automated extension installation..."
         if cursor --install-extension "$INSTALLED_EXTENSION_FILE" >/dev/null 2>&1; then
             log_success "Extension installed automatically via command line"
@@ -343,7 +404,7 @@ if [[ -n "$EXTENSION_FILE" ]]; then
     fi
     
     # If automated installation failed, provide manual instructions
-    if [[ "$EXTENSION_INSTALLED" == false ]]; then
+    if [[ "$EXTENSION_INSTALLED" == false ]] && [[ "$SKIP_EXTENSION_INSTALL" != true ]]; then
         echo -e "${BLUE}MANUAL EXTENSION INSTALLATION REQUIRED:${NC}"
         log_info "Please complete the extension installation manually:"
         log_step "1. Open Cursor IDE"

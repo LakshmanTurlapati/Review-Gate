@@ -36,21 +36,57 @@ REM Check if running on Windows
 ver | findstr /i "windows" > nul
 if errorlevel 1 (
     %log_error% This script is designed for Windows only%NC%
-    pause
+    if "!SHOULD_PAUSE!"=="1" pause
     exit /b 1
 )
 
 REM Get script directory
 set "SCRIPT_DIR=%~dp0"
 set "SCRIPT_DIR=%SCRIPT_DIR:~0,-1%"
+set "SMOKE_MODE=0"
+if /I "%REVIEW_GATE_SMOKE%"=="1" set "SMOKE_MODE=1"
+set "SKIP_DEP_INSTALL=0"
+if "!SMOKE_MODE!"=="1" set "SKIP_DEP_INSTALL=1"
+if /I "%REVIEW_GATE_SKIP_DEP_INSTALL%"=="1" set "SKIP_DEP_INSTALL=1"
+set "SKIP_EXTENSION_INSTALL=0"
+if "!SMOKE_MODE!"=="1" set "SKIP_EXTENSION_INSTALL=1"
+if /I "%REVIEW_GATE_SKIP_EXTENSION_INSTALL%"=="1" set "SKIP_EXTENSION_INSTALL=1"
+set "SKIP_SERVER_SMOKE=0"
+if "!SMOKE_MODE!"=="1" set "SKIP_SERVER_SMOKE=1"
+if /I "%REVIEW_GATE_SKIP_SERVER_SMOKE%"=="1" set "SKIP_SERVER_SMOKE=1"
+set "SHOULD_PAUSE=1"
+if "!SMOKE_MODE!"=="1" set "SHOULD_PAUSE=0"
+
+if "!SMOKE_MODE!"=="1" (
+    if "%REVIEW_GATE_TEST_HOME%"=="" (
+        %log_error% REVIEW_GATE_TEST_HOME is required when REVIEW_GATE_SMOKE=1%NC%
+        exit /b 1
+    )
+    if "%REVIEW_GATE_TEST_INSTALL_DIR%"=="" (
+        %log_error% REVIEW_GATE_TEST_INSTALL_DIR is required when REVIEW_GATE_SMOKE=1%NC%
+        exit /b 1
+    )
+    set "USERPROFILE=%REVIEW_GATE_TEST_HOME%"
+    set "APPDATA=%USERPROFILE%\AppData\Roaming"
+    set "LOCALAPPDATA=%USERPROFILE%\AppData\Local"
+    if not exist "!USERPROFILE!" mkdir "!USERPROFILE!"
+    if not exist "!APPDATA!" mkdir "!APPDATA!"
+    if not exist "!LOCALAPPDATA!" mkdir "!LOCALAPPDATA!"
+    %log_info% Smoke mode enabled with USERPROFILE redirected to: !USERPROFILE!%NC%
+    %log_info% Smoke install root redirected to: !REVIEW_GATE_TEST_INSTALL_DIR!%NC%
+)
 
 REM Check for admin privileges
-net session >nul 2>&1
-if %errorLevel% == 0 (
-    %log_success% Running with administrator privileges%NC%
+if "!SMOKE_MODE!"=="1" (
+    %log_info% Skipping Windows privilege checks in smoke mode%NC%
 ) else (
-    %log_warning% Administrator privileges recommended for package installations%NC%
-    %log_info% Some features may require manual installation%NC%
+    net session >nul 2>&1
+    if %errorLevel% == 0 (
+        %log_success% Running with administrator privileges%NC%
+    ) else (
+        %log_warning% Administrator privileges recommended for package installations%NC%
+        %log_info% Some features may require manual installation%NC%
+    )
 )
 
 REM Check if Python is available
@@ -61,7 +97,7 @@ if errorlevel 1 (
         %log_error% Python 3 is required but not installed%NC%
         %log_info% Please install Python 3 from https://python.org or Microsoft Store%NC%
         %log_info% Then run this script again%NC%
-        pause
+        if "!SHOULD_PAUSE!"=="1" pause
         exit /b 1
     ) else (
         set "PYTHON_CMD=python3"
@@ -74,42 +110,56 @@ for /f "tokens=*" %%i in ('!PYTHON_CMD! --version') do set "PYTHON_VERSION=%%i"
 %log_success% Python found: !PYTHON_VERSION!%NC%
 
 REM Check if Chocolatey is installed
-choco --version >nul 2>&1
-if errorlevel 1 (
-    %log_info% Chocolatey not found%NC%
-    %log_info% For automatic SoX installation, please install Chocolatey from:%NC%
-    %log_info% https://chocolatey.org/install%NC%
-    %log_info% Or install SoX manually from: http://sox.sourceforge.net/%NC%
+if "!SKIP_DEP_INSTALL!"=="1" (
+    %log_info% Skipping package-manager dependency installation%NC%
     set "CHOCO_AVAILABLE=false"
 ) else (
-    %log_success% Chocolatey found%NC%
-    set "CHOCO_AVAILABLE=true"
+    choco --version >nul 2>&1
+    if errorlevel 1 (
+        %log_info% Chocolatey not found%NC%
+        %log_info% For automatic SoX installation, please install Chocolatey from:%NC%
+        %log_info% https://chocolatey.org/install%NC%
+        %log_info% Or install SoX manually from: http://sox.sourceforge.net/%NC%
+        set "CHOCO_AVAILABLE=false"
+    ) else (
+        %log_success% Chocolatey found%NC%
+        set "CHOCO_AVAILABLE=true"
+    )
 )
 
 REM Install SoX for speech-to-text
 %log_progress% Checking SoX installation...%NC%
-sox --version >nul 2>&1
-if errorlevel 1 (
-    if "!CHOCO_AVAILABLE!"=="true" (
-        %log_progress% Installing SoX via Chocolatey...%NC%
-        choco install sox -y
-        if errorlevel 1 (
-            %log_warning% Failed to install SoX via Chocolatey%NC%
-            %log_info% Please install SoX manually from http://sox.sourceforge.net/%NC%
+if "!SKIP_DEP_INSTALL!"=="1" (
+    %log_info% Skipping SoX installation in smoke mode%NC%
+) else (
+    sox --version >nul 2>&1
+    if errorlevel 1 (
+        if "!CHOCO_AVAILABLE!"=="true" (
+            %log_progress% Installing SoX via Chocolatey...%NC%
+            choco install sox -y
+            if errorlevel 1 (
+                %log_warning% Failed to install SoX via Chocolatey%NC%
+                %log_info% Please install SoX manually from http://sox.sourceforge.net/%NC%
+            ) else (
+                %log_success% SoX installed successfully%NC%
+            )
         ) else (
-            %log_success% SoX installed successfully%NC%
+            %log_warning% SoX not found and Chocolatey not available%NC%
+            %log_info% Please install SoX manually from http://sox.sourceforge.net/%NC%
         )
     ) else (
-        %log_warning% SoX not found and Chocolatey not available%NC%
-        %log_info% Please install SoX manually from http://sox.sourceforge.net/%NC%
+        %log_success% SoX already installed%NC%
     )
-) else (
-    %log_success% SoX already installed%NC%
 )
 
 REM Create global Cursor extensions directory
-set "CURSOR_EXTENSIONS_DIR=%USERPROFILE%\cursor-extensions"
-set "REVIEW_GATE_DIR=%CURSOR_EXTENSIONS_DIR%\review-gate-v2"
+if "!SMOKE_MODE!"=="1" (
+    set "REVIEW_GATE_DIR=%REVIEW_GATE_TEST_INSTALL_DIR%"
+    for %%i in ("!REVIEW_GATE_DIR!\..") do set "CURSOR_EXTENSIONS_DIR=%%~fi"
+) else (
+    set "CURSOR_EXTENSIONS_DIR=%USERPROFILE%\cursor-extensions"
+    set "REVIEW_GATE_DIR=%CURSOR_EXTENSIONS_DIR%\review-gate-v2"
+)
 
 %log_progress% Creating global installation directory...%NC%
 if not exist "!CURSOR_EXTENSIONS_DIR!" mkdir "!CURSOR_EXTENSIONS_DIR!"
@@ -121,7 +171,7 @@ if exist "%SCRIPT_DIR%\review_gate_v2_mcp.py" (
     copy "%SCRIPT_DIR%\review_gate_v2_mcp.py" "!REVIEW_GATE_DIR!\" >nul
 ) else (
     %log_error% MCP server file not found: %SCRIPT_DIR%\review_gate_v2_mcp.py%NC%
-    pause
+    if "!SHOULD_PAUSE!"=="1" pause
     exit /b 1
 )
 
@@ -129,7 +179,7 @@ if exist "%SCRIPT_DIR%\requirements_simple.txt" (
     copy "%SCRIPT_DIR%\requirements_simple.txt" "!REVIEW_GATE_DIR!\" >nul
 ) else (
     %log_error% Requirements file not found: %SCRIPT_DIR%\requirements_simple.txt%NC%
-    pause
+    if "!SHOULD_PAUSE!"=="1" pause
     exit /b 1
 )
 
@@ -139,16 +189,20 @@ cd /d "!REVIEW_GATE_DIR!"
 !PYTHON_CMD! -m venv venv
 if errorlevel 1 (
     %log_error% Failed to create virtual environment%NC%
-    pause
+    if "!SHOULD_PAUSE!"=="1" pause
     exit /b 1
 )
 
 REM Activate virtual environment and install dependencies
-%log_progress% Installing Python dependencies...%NC%
-call "venv\Scripts\activate.bat"
-python -m pip install --upgrade pip
-python -m pip install -r requirements_simple.txt
-call deactivate
+if "!SKIP_DEP_INSTALL!"=="1" (
+    %log_info% Skipping Python dependency installation%NC%
+) else (
+    %log_progress% Installing Python dependencies...%NC%
+    call "venv\Scripts\activate.bat"
+    python -m pip install --upgrade pip
+    python -m pip install -r requirements_simple.txt
+    call deactivate
+)
 
 %log_success% Python environment created and dependencies installed%NC%
 
@@ -161,13 +215,13 @@ if not exist "%USERPROFILE%\.cursor" mkdir "%USERPROFILE%\.cursor"
 
 if not exist "!HELPER_SCRIPT!" (
     %log_error% MCP config helper not found: !HELPER_SCRIPT!%NC%
-    pause
+    if "!SHOULD_PAUSE!"=="1" pause
     exit /b 1
 )
 
 if not exist "!MCP_TEMPLATE!" (
     %log_error% MCP config template not found: !MCP_TEMPLATE!%NC%
-    pause
+    if "!SHOULD_PAUSE!"=="1" pause
     exit /b 1
 )
 
@@ -201,7 +255,7 @@ if errorlevel 1 (
             del /f /q "!CURSOR_MCP_FILE!" >nul 2>&1
         )
     )
-    pause
+    if "!SHOULD_PAUSE!"=="1" pause
     exit /b 1
 )
 
@@ -211,8 +265,12 @@ if errorlevel 1 (
 REM Test MCP server
 %log_progress% Testing MCP server...%NC%
 cd /d "!REVIEW_GATE_DIR!"
-timeout /t 1 /nobreak >nul 2>&1
-%log_warning% MCP server test skipped (manual verification required)%NC%
+if "!SKIP_SERVER_SMOKE!"=="1" (
+    %log_info% Skipping MCP server smoke test%NC%
+) else (
+    timeout /t 1 /nobreak >nul 2>&1
+    %log_warning% MCP server test skipped (manual verification required)%NC%
+)
 
 REM Install Cursor extension
 set "EXTENSION_VERSION=2.7.3"
@@ -230,30 +288,34 @@ if defined EXTENSION_FILE (
     
     REM Try automated installation first
     set "EXTENSION_INSTALLED=false"
-    set "CURSOR_CMD="
-    
-    REM Check for cursor command in various locations
-    if exist "%ProgramFiles%\Cursor\resources\app\bin\cursor.cmd" (
-        set "CURSOR_CMD=%ProgramFiles%\Cursor\resources\app\bin\cursor.cmd"
-    ) else if exist "%LOCALAPPDATA%\Programs\cursor\resources\app\bin\cursor.cmd" (
-        set "CURSOR_CMD=%LOCALAPPDATA%\Programs\cursor\resources\app\bin\cursor.cmd"
-    ) else if exist "%ProgramFiles(x86)%\Cursor\resources\app\bin\cursor.cmd" (
-        set "CURSOR_CMD=%ProgramFiles(x86)%\Cursor\resources\app\bin\cursor.cmd"
-    )
-    
-    if defined CURSOR_CMD (
-        %log_progress% Attempting automated extension installation...%NC%
-        "!CURSOR_CMD!" --install-extension "!INSTALLED_EXTENSION_FILE!" >nul 2>&1
-        if !errorlevel! equ 0 (
-            %log_success% Extension installed automatically via command line%NC%
-            set "EXTENSION_INSTALLED=true"
-        ) else (
-            %log_warning% Automated installation failed, falling back to manual method%NC%
+    if "!SKIP_EXTENSION_INSTALL!"=="1" (
+        %log_info% Skipping automated Cursor extension installation%NC%
+    ) else (
+        set "CURSOR_CMD="
+        
+        REM Check for cursor command in various locations
+        if exist "%ProgramFiles%\Cursor\resources\app\bin\cursor.cmd" (
+            set "CURSOR_CMD=%ProgramFiles%\Cursor\resources\app\bin\cursor.cmd"
+        ) else if exist "%LOCALAPPDATA%\Programs\cursor\resources\app\bin\cursor.cmd" (
+            set "CURSOR_CMD=%LOCALAPPDATA%\Programs\cursor\resources\app\bin\cursor.cmd"
+        ) else if exist "%ProgramFiles(x86)%\Cursor\resources\app\bin\cursor.cmd" (
+            set "CURSOR_CMD=%ProgramFiles(x86)%\Cursor\resources\app\bin\cursor.cmd"
+        )
+        
+        if defined CURSOR_CMD (
+            %log_progress% Attempting automated extension installation...%NC%
+            "!CURSOR_CMD!" --install-extension "!INSTALLED_EXTENSION_FILE!" >nul 2>&1
+            if !errorlevel! equ 0 (
+                %log_success% Extension installed automatically via command line%NC%
+                set "EXTENSION_INSTALLED=true"
+            ) else (
+                %log_warning% Automated installation failed, falling back to manual method%NC%
+            )
         )
     )
     
     REM If automated installation failed, provide manual instructions
-    if "!EXTENSION_INSTALLED!" equ "false" (
+    if "!EXTENSION_INSTALLED!"=="false" if "!SKIP_EXTENSION_INSTALL!"=="0" (
         echo.
         %log_header% MANUAL EXTENSION INSTALLATION REQUIRED:%NC%
         %log_info% Please complete the extension installation manually:%NC%
@@ -278,7 +340,7 @@ if defined EXTENSION_FILE (
 ) else (
     %log_error% Extension file not found. Checked: %SCRIPT_DIR%\!EXTENSION_BASENAME! and %SCRIPT_DIR%\cursor-extension\!EXTENSION_BASENAME!%NC%
     %log_info% Please ensure one of the shipped VSIX files exists before running the installer again%NC%
-    pause
+    if "!SHOULD_PAUSE!"=="1" pause
     exit /b 1
 )
 
@@ -341,7 +403,7 @@ if exist "!REVIEW_GATE_DIR!\review_gate_v2_mcp.py" (
     if exist "!CURSOR_MCP_FILE!" (
         if exist "!REVIEW_GATE_DIR!\venv" (
             %log_success% All components installed successfully%NC%
-            pause
+            if "!SHOULD_PAUSE!"=="1" pause
             exit /b 0
         )
     )
@@ -349,5 +411,5 @@ if exist "!REVIEW_GATE_DIR!\review_gate_v2_mcp.py" (
 
 %log_error% Some components may not have installed correctly%NC%
 %log_info% Please check the installation manually%NC%
-pause
+if "!SHOULD_PAUSE!"=="1" pause
 exit /b 1
