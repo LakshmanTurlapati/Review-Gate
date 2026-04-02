@@ -14,6 +14,53 @@ function getTempPath(filename) {
     }
 }
 
+const SESSION_FILE_NAMES = {
+    trigger: 'review_gate_trigger_{triggerId}.json',
+    ack: 'review_gate_ack_{triggerId}.json',
+    response: 'review_gate_response_{triggerId}.json',
+    speechTrigger: 'review_gate_speech_trigger_{triggerId}.json',
+    speechResponse: 'review_gate_speech_response_{triggerId}.json'
+};
+
+function getSessionFilePath(kind, triggerId) {
+    return getTempPath(SESSION_FILE_NAMES[kind].replace('{triggerId}', triggerId));
+}
+
+function listPendingTriggerFiles() {
+    const tempDir = getTempPath('');
+    const triggerPattern = /^review_gate_trigger_.+\.json$/;
+
+    try {
+        return fs.readdirSync(tempDir)
+            .filter(fileName => triggerPattern.test(fileName))
+            .map(fileName => path.join(tempDir, fileName))
+            .filter(filePath => {
+                try {
+                    return fs.statSync(filePath).isFile();
+                } catch (error) {
+                    return false;
+                }
+            })
+            .sort((left, right) => {
+                try {
+                    const leftStats = fs.statSync(left);
+                    const rightStats = fs.statSync(right);
+                    if (leftStats.mtimeMs !== rightStats.mtimeMs) {
+                        return leftStats.mtimeMs - rightStats.mtimeMs;
+                    }
+                } catch (error) {
+                    return left.localeCompare(right);
+                }
+                return left.localeCompare(right);
+            });
+    } catch (error) {
+        if (error.code !== 'ENOENT') {
+            logMessage(`Could not list pending trigger files: ${error.message}`);
+        }
+        return [];
+    }
+}
+
 let chatPanel = null;
 let reviewGateWatcher = null;
 let outputChannel = null;
@@ -78,14 +125,6 @@ function logUserInput(inputText, eventType = 'MESSAGE', triggerId = null, attach
         
         // Write response file for MCP server integration if we have a trigger ID
         if (triggerId && eventType === 'MCP_RESPONSE') {
-            // Write multiple response file patterns for better compatibility
-            const responsePatterns = [
-                getTempPath(`review_gate_response_${triggerId}.json`),
-                getTempPath('review_gate_response.json'),  // Fallback generic response
-                getTempPath(`mcp_response_${triggerId}.json`),  // Alternative pattern
-                getTempPath('mcp_response.json')  // Generic MCP response
-            ];
-            
             const responseData = {
                 timestamp: timestamp,
                 trigger_id: triggerId,
@@ -98,16 +137,14 @@ function logUserInput(inputText, eventType = 'MESSAGE', triggerId = null, attach
             };
             
             const responseJson = JSON.stringify(responseData, null, 2);
-            
-            // Write to all response file patterns
-            responsePatterns.forEach(responseFile => {
-                try {
-                    fs.writeFileSync(responseFile, responseJson);
-                    logMessage(`MCP response written: ${responseFile}`);
-                } catch (writeError) {
-                    logMessage(`Failed to write response file ${responseFile}: ${writeError.message}`);
-                }
-            });
+
+            const responseFile = getSessionFilePath('response', triggerId);
+            try {
+                fs.writeFileSync(responseFile, responseJson);
+                logMessage(`MCP response written: ${responseFile}`);
+            } catch (writeError) {
+                logMessage(`Failed to write response file ${responseFile}: ${writeError.message}`);
+            }
         }
         
     } catch (error) {
@@ -178,24 +215,18 @@ function updateChatPanelStatus() {
 
 function startReviewGateIntegration(context) {
     // Silent integration start
-    
-    // Watch for Review Gate trigger file
-    const triggerFilePath = getTempPath('review_gate_trigger.json');
-    
-    // Check for existing trigger file first
-    checkTriggerFile(context, triggerFilePath);
-    
+
+    // Check for existing trigger files first
+    listPendingTriggerFiles().forEach(filePath => {
+        checkTriggerFile(context, filePath);
+    });
+
     // Use a more robust polling approach instead of fs.watchFile
     // fs.watchFile can miss rapid file creation/deletion cycles
     const pollInterval = setInterval(() => {
-        // Check main trigger file
-        checkTriggerFile(context, triggerFilePath);
-        
-        // Check backup trigger files
-        for (let i = 0; i < 3; i++) {
-            const backupTriggerPath = getTempPath(`review_gate_trigger_${i}.json`);
-            checkTriggerFile(context, backupTriggerPath);
-        }
+        listPendingTriggerFiles().forEach(filePath => {
+            checkTriggerFile(context, filePath);
+        });
     }, 250); // Check every 250ms for better performance
     
     // Store the interval for cleanup
@@ -212,7 +243,9 @@ function startReviewGateIntegration(context) {
     
     // Immediate check on startup
     setTimeout(() => {
-        checkTriggerFile(context, triggerFilePath);
+        listPendingTriggerFiles().forEach(filePath => {
+            checkTriggerFile(context, filePath);
+        });
     }, 100);
     
     // Show notification that we're ready
@@ -373,7 +406,7 @@ function sendExtensionAcknowledgement(triggerId, toolType) {
             popup_activated: true
         };
         
-        const ackFile = getTempPath(`review_gate_ack_${triggerId}.json`);
+        const ackFile = getSessionFilePath('ack', triggerId);
         fs.writeFileSync(ackFile, JSON.stringify(ackData, null, 2));
         
         // Silent acknowledgement 
@@ -1855,7 +1888,7 @@ async function handleSpeechToText(audioData, triggerId, isFilePath = false) {
             mcp_integration: true
         };
         
-        const triggerFile = getTempPath(`review_gate_speech_trigger_${triggerId}.json`);
+        const triggerFile = getSessionFilePath('speechTrigger', triggerId);
         fs.writeFileSync(triggerFile, JSON.stringify(transcriptionRequest, null, 2));
         
         console.log(`Speech-to-text request sent: ${triggerFile}`);
@@ -1866,7 +1899,7 @@ async function handleSpeechToText(audioData, triggerId, isFilePath = false) {
         let waitTime = 0;
         
         const pollForResult = setInterval(() => {
-            const resultFile = getTempPath(`review_gate_speech_response_${triggerId}.json`);
+            const resultFile = getSessionFilePath('speechResponse', triggerId);
             
             if (fs.existsSync(resultFile)) {
                 try {

@@ -53,6 +53,25 @@ def get_temp_path(filename: str) -> str:
         temp_dir = '/tmp'
     return os.path.join(temp_dir, filename)
 
+
+SESSION_FILE_NAMES = {
+    "trigger": "review_gate_trigger_{trigger_id}.json",
+    "ack": "review_gate_ack_{trigger_id}.json",
+    "response": "review_gate_response_{trigger_id}.json",
+    "speech_trigger": "review_gate_speech_trigger_{trigger_id}.json",
+    "speech_response": "review_gate_speech_response_{trigger_id}.json",
+}
+
+
+def _session_file(kind: str, trigger_id: str) -> Path:
+    """Return the canonical session-scoped IPC path for a trigger."""
+    return Path(get_temp_path(SESSION_FILE_NAMES[kind].format(trigger_id=trigger_id)))
+
+
+def _session_glob(kind: str) -> str:
+    """Return a glob pattern for session-scoped IPC files of a given kind."""
+    return str(_session_file(kind, "*"))
+
 # Configure logging with immediate flush
 log_file_path = get_temp_path('review_gate_v2.log')
 
@@ -387,59 +406,46 @@ class ReviewGateServer:
         
         logger.info(f"🔍 CHECKING for user input (timeout: {timeout}s)")
         
-        # Check all possible response file patterns
-        response_patterns = [
-            os.path.join(tempfile.gettempdir(), "review_gate_response_*.json"),
-            get_temp_path("review_gate_response.json"),
-            os.path.join(tempfile.gettempdir(), "mcp_response_*.json"),
-            get_temp_path("mcp_response.json")
-        ]
-        
-        import glob
         start_time = time.time()
         
         while time.time() - start_time < timeout:
             try:
-                # Check all response patterns
-                for pattern in response_patterns:
-                    matching_files = glob.glob(pattern)
-                    for response_file_path in matching_files:
-                        response_file = Path(response_file_path)
-                        if response_file.exists():
+                for response_file_path in sorted(glob.glob(_session_glob("response"))):
+                    response_file = Path(response_file_path)
+                    if not response_file.exists():
+                        continue
+
+                    try:
+                        file_content = response_file.read_text().strip()
+                        logger.info(f"📄 Found response file {response_file}: {file_content[:200]}...")
+
+                        if file_content.startswith('{'):
+                            data = json.loads(file_content)
+                            user_input = data.get("user_input", data.get("response", data.get("message", ""))).strip()
+                        else:
+                            user_input = file_content
+
+                        if user_input:
                             try:
-                                file_content = response_file.read_text().strip()
-                                logger.info(f"📄 Found response file {response_file}: {file_content[:200]}...")
-                                
-                                # Handle JSON format
-                                if file_content.startswith('{'):
-                                    data = json.loads(file_content)
-                                    user_input = data.get("user_input", data.get("response", data.get("message", ""))).strip()
-                                # Handle plain text format
-                                else:
-                                    user_input = file_content
-                                
-                                if user_input:
-                                    # Clean up response file
-                                    try:
-                                        response_file.unlink()
-                                        logger.info(f"🧹 Response file cleaned up: {response_file}")
-                                    except Exception as cleanup_error:
-                                        logger.warning(f"⚠️ Cleanup error: {cleanup_error}")
-                                    
-                                    logger.info(f"✅ RETRIEVED USER INPUT: {user_input[:100]}...")
-                                    
-                                    result_message = f"✅ User Input Retrieved\n\n"
-                                    result_message += f"💬 User Response: {user_input}\n"
-                                    result_message += f"📁 Source File: {response_file.name}\n"
-                                    result_message += f"⏰ Retrieved at: {datetime.now().isoformat()}\n\n"
-                                    result_message += f"🎯 User input successfully captured from Review Gate."
-                                    
-                                    return [TextContent(type="text", text=result_message)]
-                                    
-                            except json.JSONDecodeError as e:
-                                logger.error(f"❌ JSON decode error in {response_file}: {e}")
-                            except Exception as e:
-                                logger.error(f"❌ Error processing response file {response_file}: {e}")
+                                response_file.unlink()
+                                logger.info(f"🧹 Response file cleaned up: {response_file}")
+                            except Exception as cleanup_error:
+                                logger.warning(f"⚠️ Cleanup error: {cleanup_error}")
+
+                            logger.info(f"✅ RETRIEVED USER INPUT: {user_input[:100]}...")
+
+                            result_message = f"✅ User Input Retrieved\n\n"
+                            result_message += f"💬 User Response: {user_input}\n"
+                            result_message += f"📁 Source File: {response_file.name}\n"
+                            result_message += f"⏰ Retrieved at: {datetime.now().isoformat()}\n\n"
+                            result_message += f"🎯 User input successfully captured from Review Gate."
+
+                            return [TextContent(type="text", text=result_message)]
+
+                    except json.JSONDecodeError as e:
+                        logger.error(f"❌ JSON decode error in {response_file}: {e}")
+                    except Exception as e:
+                        logger.error(f"❌ Error processing response file {response_file}: {e}")
                 
                 # Short sleep to avoid excessive CPU usage
                 await asyncio.sleep(0.5)
@@ -450,7 +456,7 @@ class ReviewGateServer:
         
         # No input found within timeout
         no_input_message = f"⏰ No user input found within {timeout} seconds\n\n"
-        no_input_message += f"🔍 Checked patterns: {', '.join(response_patterns)}\n"
+        no_input_message += f"🔍 Checked pattern: {_session_glob('response')}\n"
         no_input_message += f"💡 User may not have provided input yet, or the popup may not be active.\n\n"
         no_input_message += f"🎯 Try calling this tool again after the user provides input."
         
@@ -641,7 +647,7 @@ class ReviewGateServer:
 
     async def _wait_for_extension_acknowledgement(self, trigger_id: str, timeout: int = 30) -> bool:
         """Wait for extension acknowledgement that popup was activated"""
-        ack_file = Path(get_temp_path(f"review_gate_ack_{trigger_id}.json"))
+        ack_file = _session_file("ack", trigger_id)
         
         logger.info(f"🔍 Monitoring for extension acknowledgement: {ack_file}")
         
@@ -677,12 +683,7 @@ class ReviewGateServer:
 
     async def _wait_for_user_input(self, trigger_id: str, timeout: int = 120) -> Optional[str]:
         """Wait for user input from the Cursor extension popup with frequent checks and multiple response patterns"""
-        response_patterns = [
-            Path(get_temp_path(f"review_gate_response_{trigger_id}.json")),
-            Path(get_temp_path("review_gate_response.json")),  # Fallback generic response
-            Path(get_temp_path(f"mcp_response_{trigger_id}.json")),  # Alternative pattern
-            Path(get_temp_path("mcp_response.json"))  # Generic MCP response
-        ]
+        response_patterns = [_session_file("response", trigger_id)]
         
         logger.info(f"👁️ Monitoring for response files: {[str(p) for p in response_patterns]}")
         logger.info(f"🔍 Trigger ID: {trigger_id}")
@@ -766,7 +767,12 @@ class ReviewGateServer:
             # Add delay before creating trigger to ensure readiness
             await asyncio.sleep(0.1)  # Wait 100ms before trigger creation
             
-            trigger_file = Path(get_temp_path("review_gate_trigger.json"))
+            trigger_id = data.get("trigger_id")
+            if not trigger_id:
+                logger.error("❌ Trigger data missing trigger_id")
+                return False
+
+            trigger_file = _session_file("trigger", trigger_id)
             
             trigger_data = {
                 "timestamp": datetime.now().isoformat(),
@@ -812,9 +818,6 @@ class ReviewGateServer:
             logger.info(f"📁 Trigger file path: {trigger_file.absolute()}")
             logger.info(f"📊 Trigger file size: {file_size} bytes")
             
-            # Create multiple backup trigger files for reliability
-            await self._create_backup_triggers(data)
-            
             # Add small delay to allow extension to process
             await asyncio.sleep(0.2)  # Wait 200ms for extension to process
             
@@ -850,27 +853,6 @@ class ReviewGateServer:
             # Wait before returning failure
             await asyncio.sleep(1.0)  # Wait 1 second before confirming failure
             return False
-
-    async def _create_backup_triggers(self, data: dict):
-        """Create backup trigger files for better reliability"""
-        try:
-            # Create multiple backup trigger files
-            for i in range(3):
-                backup_trigger = Path(get_temp_path(f"review_gate_trigger_{i}.json"))
-                backup_data = {
-                    "backup_id": i,
-                    "timestamp": datetime.now().isoformat(),
-                    "system": "review-gate-v2",
-                    "data": data,
-                    "mcp_integration": True,
-                    "immediate_activation": True
-                }
-                backup_trigger.write_text(json.dumps(backup_data, indent=2))
-            
-            logger.info("🔄 Backup trigger files created for reliability")
-            
-        except Exception as e:
-            logger.warning(f"⚠️ Backup trigger creation failed: {e}")
 
     async def run(self):
         """Run the Review Gate server with immediate activation capability and shutdown monitoring"""
@@ -949,16 +931,12 @@ class ReviewGateServer:
         
         # Clean up any temporary files
         try:
-            temp_files = [
-                get_temp_path("review_gate_trigger.json"),
-                get_temp_path("review_gate_trigger_0.json"),
-                get_temp_path("review_gate_trigger_1.json"), 
-                get_temp_path("review_gate_trigger_2.json")
-            ]
-            for temp_file in temp_files:
-                if Path(temp_file).exists():
-                    Path(temp_file).unlink()
-                    logger.info(f"🗑️ Cleaned up: {os.path.basename(temp_file)}")
+            for kind in ("trigger", "ack", "response", "speech_trigger", "speech_response"):
+                for temp_file in glob.glob(_session_glob(kind)):
+                    temp_path = Path(temp_file)
+                    if temp_path.exists():
+                        temp_path.unlink()
+                        logger.info(f"🗑️ Cleaned up: {temp_path.name}")
                     
             # Clean up any orphaned audio files (older than 5 minutes)
             import time
@@ -1007,8 +985,7 @@ class ReviewGateServer:
                         last_heartbeat = current_time
                     
                     # Look for speech trigger files using cross-platform temp path
-                    temp_dir = get_temp_path("")
-                    speech_triggers = glob.glob(os.path.join(temp_dir, "review_gate_speech_trigger_*.json"))
+                    speech_triggers = glob.glob(_session_glob("speech_trigger"))
                     
                     for trigger_file in speech_triggers:
                         try:
@@ -1145,7 +1122,7 @@ class ReviewGateServer:
                 'source': 'review_gate_whisper'
             }
             
-            response_file = get_temp_path(f"review_gate_speech_response_{trigger_id}.json")
+            response_file = _session_file("speech_response", trigger_id)
             with open(response_file, 'w') as f:
                 json.dump(response_data, f, indent=2)
             
