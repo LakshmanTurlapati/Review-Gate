@@ -84,7 +84,7 @@ graph TD
 
 ## Installation
 
-**For the full V2 experience, please look at the V2 directory!**
+**For the full V2 experience, start with `V2/INSTALLATION.md`.** It documents the current shipped V2 files, including `V2/review-gate-v2-2.7.3.vsix`, `V2/ReviewGateV2.mdc`, and the merge-safe MCP setup.
 
 ### V2 Installation (Recommended - MCP Integration)
 
@@ -116,13 +116,13 @@ The installer automatically handles:
 - **Dependencies**: Package managers (Homebrew/Chocolatey), SoX (for speech), Python packages
 - **MCP Server**: Global installation with proper configuration
 - **Extension**: Cursor extension for the popup interface
-- **Configuration**: MCP integration setup with safe merging of existing configurations
+- **Configuration**: MCP integration setup that preserves existing MCP configuration by merging only the `review-gate-v2` entry
 
 #### Alternative: Manual Extension Installation
 
 If the automatic installer doesn't install the extension properly, you can install it manually:
 
-1. **Download Extension**: Get `review-gate-v2-2.7.3.vsix` from the V2 directory
+1. **Download Extension**: Use `V2/review-gate-v2-2.7.3.vsix` as the primary shipped artifact, or `V2/cursor-extension/review-gate-v2-2.7.3.vsix` if you need the fallback build output
 2. **Open Cursor**: Launch Cursor IDE
 3. **Extensions Panel**: Press `Cmd/Ctrl+Shift+X` to open Extensions
 4. **Install from VSIX**: Click the `...` menu → "Install from VSIX..."
@@ -138,6 +138,8 @@ If the automatic installer doesn't install the extension properly, you can insta
 3. **Find Rules Section**: Look for "Rules" or "AI Rules" in the settings
 4. **Paste & Save**: Paste the entire V2 rule content and save
 5. **Restart Cursor**: Restart Cursor completely for the rule to take effect
+
+If you ever edit `~/.cursor/mcp.json` manually, preserve existing MCP server entries and merge the `review-gate-v2` configuration instead of replacing the whole file.
 
 ### V1 Installation (Original Terminal-Based)
 
