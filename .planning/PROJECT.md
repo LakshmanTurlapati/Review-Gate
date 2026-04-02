@@ -17,13 +17,15 @@ Keep the human and agent in the same working loop until the human says the task 
 - ✓ User can send text and image feedback through the V2 popup, and the server returns that context to Cursor. - existing
 - ✓ Speech-to-text is supported on local setups with SoX and Faster-Whisper available. - existing
 - ✓ Installers and uninstallers exist for macOS/Linux/Windows, along with MCP config and rule setup docs. - existing
+- ✓ Windows install and uninstall preserve unrelated Cursor MCP server entries while updating only `review-gate-v2`. - validated in Phase 1
+- ✓ Runtime scripts and user-facing docs now point to the current V2 rule file and 2.7.3 VSIX artifact set. - validated in Phase 1
 
 ### Active
 
-- [ ] Make installation and uninstallation safe and correct across supported platforms, including MCP config preservation and current asset/version references.
 - [ ] Harden session routing and temp-file IPC so concurrent or stale sessions do not corrupt user input or trust shared temp files.
 - [ ] Add automated verification for the Python server, Cursor extension flow, and installer smoke paths.
 - [ ] Reduce release drift by making docs, artifacts, and supported runtime surface match the actual shipped behavior.
+- [ ] Complete native macOS and Windows install smoke validation for the corrected Phase 1 installer flows.
 
 ### Out of Scope
 
@@ -53,6 +55,7 @@ Keep the human and agent in the same working loop until the human says the task 
 | Treat Review Gate V2 as the primary product surface | The repo and README position V2 as the recommended path, while V1 is legacy compatibility | - Pending |
 | Use brownfield initialization with validated existing capabilities | The codebase already ships end-to-end functionality that should be preserved instead of modeled as greenfield ideas | - Pending |
 | Prioritize hardening, verification, and release hygiene before new feature expansion | The codebase map surfaced installer bugs, protocol fragility, and zero automated regression coverage | - Pending |
+| Standardize installers on `ReviewGateV2.mdc`, `review-gate-v2-2.7.3.vsix`, and targeted MCP config mutation | Phase 1 needed one consistent supported runtime surface before session hardening work could safely build on it | ✓ Good |
 
 ## Evolution
 
@@ -72,4 +75,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-04-02 after initialization*
+*Last updated: 2026-04-02 after Phase 1*
