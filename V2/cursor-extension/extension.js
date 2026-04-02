@@ -14,6 +14,62 @@ function getTempPath(filename) {
     }
 }
 
+function sanitizeRuntimeComponent(value, fallback = 'unknown-user') {
+    const sanitized = String(value || '')
+        .trim()
+        .replace(/[^A-Za-z0-9._-]/g, '_')
+        .replace(/^[._-]+|[._-]+$/g, '');
+
+    return sanitized || fallback;
+}
+
+function getRuntimeUserId() {
+    const candidates = [
+        process.env.REVIEW_GATE_USER_ID,
+        process.env.USER,
+        process.env.USERNAME
+    ];
+
+    try {
+        candidates.push(os.userInfo().username);
+    } catch (error) {
+        // Ignore userInfo lookup failures and fall back to "unknown-user".
+    }
+
+    for (const candidate of candidates) {
+        if (candidate && String(candidate).trim()) {
+            return sanitizeRuntimeComponent(candidate, 'unknown-user');
+        }
+    }
+
+    return 'unknown-user';
+}
+
+function ensureDirectory(directoryPath) {
+    fs.mkdirSync(directoryPath, { recursive: true, mode: 0o700 });
+    if (process.platform !== 'win32') {
+        try {
+            fs.chmodSync(directoryPath, 0o700);
+        } catch (error) {
+            // Ignore chmod failures on filesystems that do not support POSIX permissions.
+        }
+    }
+    return directoryPath;
+}
+
+function getRuntimeRoot() {
+    return ensureDirectory(path.join(getTempPath(''), 'review-gate-v2', getRuntimeUserId()));
+}
+
+function getSessionsRoot() {
+    return ensureDirectory(path.join(getRuntimeRoot(), 'sessions'));
+}
+
+function getSessionDir(triggerId) {
+    const sessionId = sanitizeRuntimeComponent(triggerId, 'session');
+    return ensureDirectory(path.join(getSessionsRoot(), sessionId));
+}
+
 const SESSION_FILE_NAMES = {
     trigger: 'review_gate_trigger_{triggerId}.json',
     ack: 'review_gate_ack_{triggerId}.json',
@@ -33,42 +89,59 @@ const STALE_FILE_PATTERNS = [
 ];
 
 function getSessionFilePath(kind, triggerId) {
-    return getTempPath(SESSION_FILE_NAMES[kind].replace('{triggerId}', triggerId));
+    const sessionId = sanitizeRuntimeComponent(triggerId, 'session');
+    return path.join(getSessionDir(sessionId), SESSION_FILE_NAMES[kind].replace('{triggerId}', sessionId));
+}
+
+function getMcpLogPath() {
+    return path.join(getRuntimeRoot(), 'review_gate_v2.log');
 }
 
 function listPendingTriggerFiles() {
-    const tempDir = getTempPath('');
     const triggerPattern = /^review_gate_trigger_.+\.json$/;
+    const pendingFiles = [];
 
     try {
-        return fs.readdirSync(tempDir)
-            .filter(fileName => triggerPattern.test(fileName))
-            .map(fileName => path.join(tempDir, fileName))
-            .filter(filePath => {
-                try {
-                    return fs.statSync(filePath).isFile();
-                } catch (error) {
-                    return false;
+        for (const sessionEntry of fs.readdirSync(getSessionsRoot(), { withFileTypes: true })) {
+            if (!sessionEntry.isDirectory()) {
+                continue;
+            }
+
+            const sessionDir = path.join(getSessionsRoot(), sessionEntry.name);
+            for (const fileName of fs.readdirSync(sessionDir)) {
+                if (!triggerPattern.test(fileName)) {
+                    continue;
                 }
-            })
-            .sort((left, right) => {
+
+                const filePath = path.join(sessionDir, fileName);
                 try {
-                    const leftStats = fs.statSync(left);
-                    const rightStats = fs.statSync(right);
-                    if (leftStats.mtimeMs !== rightStats.mtimeMs) {
-                        return leftStats.mtimeMs - rightStats.mtimeMs;
+                    if (fs.statSync(filePath).isFile()) {
+                        pendingFiles.push(filePath);
                     }
                 } catch (error) {
-                    return left.localeCompare(right);
+                    // Ignore files that disappeared between the directory read and stat call.
                 }
-                return left.localeCompare(right);
-            });
+            }
+        }
     } catch (error) {
         if (error.code !== 'ENOENT') {
             logMessage(`Could not list pending trigger files: ${error.message}`);
         }
         return [];
     }
+
+    return pendingFiles.sort((left, right) => {
+        try {
+            const leftStats = fs.statSync(left);
+            const rightStats = fs.statSync(right);
+            if (leftStats.mtimeMs !== rightStats.mtimeMs) {
+                return leftStats.mtimeMs - rightStats.mtimeMs;
+            }
+        } catch (error) {
+            return left.localeCompare(right);
+        }
+        return left.localeCompare(right);
+    });
 }
 
 let chatPanel = null;
@@ -485,7 +558,7 @@ function startMcpStatusMonitoring(context) {
 function checkMcpStatus() {
     try {
         // Check if MCP server log exists and is recent
-        const mcpLogPath = getTempPath('review_gate_v2.log');
+        const mcpLogPath = getMcpLogPath();
         if (fs.existsSync(mcpLogPath)) {
             const stats = fs.statSync(mcpLogPath);
             const now = Date.now();

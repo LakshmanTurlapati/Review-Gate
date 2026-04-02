@@ -10,6 +10,7 @@ Requirements:
 """
 
 import asyncio
+import getpass
 import json
 import sys
 import logging
@@ -54,6 +55,61 @@ def get_temp_path(filename: str) -> str:
     return os.path.join(temp_dir, filename)
 
 
+def _sanitize_runtime_component(value: str, fallback: str) -> str:
+    """Normalize a runtime path component so both runtimes derive the same subtree."""
+    sanitized = "".join(
+        char if char.isalnum() or char in "._-" else "_"
+        for char in str(value or "").strip()
+    ).strip("._-")
+    return sanitized or fallback
+
+
+def _runtime_user_id() -> str:
+    """Derive a stable user identifier shared with the Cursor extension runtime."""
+    for env_key in ("REVIEW_GATE_USER_ID", "USER", "USERNAME"):
+        env_value = os.environ.get(env_key, "").strip()
+        if env_value:
+            return _sanitize_runtime_component(env_value, "unknown-user")
+
+    try:
+        return _sanitize_runtime_component(getpass.getuser(), "unknown-user")
+    except Exception:
+        return "unknown-user"
+
+
+def _ensure_private_directory(directory_path: Path) -> Path:
+    """Create a private runtime directory when the platform supports POSIX permissions."""
+    directory_path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if os.name != 'nt':
+        try:
+            os.chmod(directory_path, 0o700)
+        except OSError:
+            pass
+    return directory_path
+
+
+def get_runtime_root() -> Path:
+    """Return the Review Gate-owned per-user runtime root under the system temp directory."""
+    return _ensure_private_directory(
+        Path(get_temp_path("")) / "review-gate-v2" / _runtime_user_id()
+    )
+
+
+def _sessions_root() -> Path:
+    """Return the shared session storage root inside the runtime subtree."""
+    return _ensure_private_directory(get_runtime_root() / "sessions")
+
+
+def _session_token(trigger_id: str) -> str:
+    """Normalize a trigger identifier before using it as a runtime path segment."""
+    return _sanitize_runtime_component(trigger_id, "session")
+
+
+def _session_dir(trigger_id: str) -> Path:
+    """Return the canonical session directory for a trigger."""
+    return _ensure_private_directory(_sessions_root() / _session_token(trigger_id))
+
+
 SESSION_FILE_NAMES = {
     "trigger": "review_gate_trigger_{trigger_id}.json",
     "ack": "review_gate_ack_{trigger_id}.json",
@@ -65,12 +121,13 @@ SESSION_FILE_NAMES = {
 
 def _session_file(kind: str, trigger_id: str) -> Path:
     """Return the canonical session-scoped IPC path for a trigger."""
-    return Path(get_temp_path(SESSION_FILE_NAMES[kind].format(trigger_id=trigger_id)))
+    session_token = _session_token(trigger_id)
+    return _session_dir(session_token) / SESSION_FILE_NAMES[kind].format(trigger_id=session_token)
 
 
 def _session_glob(kind: str) -> str:
     """Return a glob pattern for session-scoped IPC files of a given kind."""
-    return str(_session_file(kind, "*"))
+    return str(_sessions_root() / "*" / SESSION_FILE_NAMES[kind].format(trigger_id="*"))
 
 
 def _session_trigger_id_from_path(kind: str, file_path: Path) -> Optional[str]:
@@ -91,7 +148,7 @@ def _audio_file_matches_trigger(audio_file: str, trigger_id: str) -> bool:
     return Path(audio_file).name.startswith(f"review_gate_audio_{trigger_id}_")
 
 # Configure logging with immediate flush
-log_file_path = get_temp_path('review_gate_v2.log')
+log_file_path = str(get_runtime_root() / 'review_gate_v2.log')
 
 # Create handlers separately to handle Windows file issues
 handlers = []
