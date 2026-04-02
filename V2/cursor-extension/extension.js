@@ -524,16 +524,69 @@ let statusCheckInterval = null;
 let activeMcpSession = null;
 let handledTriggerIds = new Set();
 let lastStaleCleanupAt = 0;
-let currentPopupContext = {
-    message: null,
-    triggerId: null,
-    mcpIntegration: false,
-    specialHandling: null,
-    toolData: null,
-    sessionToken: null,
-    protocolVersion: null
-};
+let managedIntervals = new Set();
+let managedTimeouts = new Set();
 let currentRecording = null;
+
+function createEmptyPopupContext() {
+    return {
+        message: null,
+        triggerId: null,
+        mcpIntegration: false,
+        specialHandling: null,
+        toolData: null,
+        sessionToken: null,
+        protocolVersion: null
+    };
+}
+
+let currentPopupContext = createEmptyPopupContext();
+
+function setManagedTimeout(callback, delay) {
+    let timeoutHandle = null;
+    timeoutHandle = setTimeout(() => {
+        managedTimeouts.delete(timeoutHandle);
+        callback();
+    }, delay);
+    managedTimeouts.add(timeoutHandle);
+    return timeoutHandle;
+}
+
+function clearManagedTimeout(timeoutHandle) {
+    if (!timeoutHandle) {
+        return;
+    }
+
+    clearTimeout(timeoutHandle);
+    managedTimeouts.delete(timeoutHandle);
+}
+
+function setManagedInterval(callback, delay) {
+    const intervalHandle = setInterval(callback, delay);
+    managedIntervals.add(intervalHandle);
+    return intervalHandle;
+}
+
+function clearManagedInterval(intervalHandle) {
+    if (!intervalHandle) {
+        return;
+    }
+
+    clearInterval(intervalHandle);
+    managedIntervals.delete(intervalHandle);
+}
+
+function clearManagedTimers() {
+    for (const timeoutHandle of managedTimeouts) {
+        clearTimeout(timeoutHandle);
+    }
+    managedTimeouts.clear();
+
+    for (const intervalHandle of managedIntervals) {
+        clearInterval(intervalHandle);
+    }
+    managedIntervals.clear();
+}
 
 function setPopupContext(nextContext = {}) {
     currentPopupContext = {
@@ -590,6 +643,32 @@ function clearActiveMcpSession(triggerId = null) {
 
     activeMcpSession = null;
     setPopupContext();
+}
+
+function resetState() {
+    clearManagedTimers();
+    chatPanel = null;
+    reviewGateWatcher = null;
+    mcpStatus = false;
+    statusCheckInterval = null;
+    activeMcpSession = null;
+    handledTriggerIds = new Set();
+    lastStaleCleanupAt = 0;
+    currentPopupContext = createEmptyPopupContext();
+
+    if (currentRecording) {
+        cancelActiveRecording('Reset runtime state');
+    }
+    currentRecording = null;
+
+    if (outputChannel && typeof outputChannel.dispose === 'function') {
+        try {
+            outputChannel.dispose();
+        } catch (error) {
+            // Ignore cleanup failures from stubbed output channels.
+        }
+    }
+    outputChannel = null;
 }
 
 function cleanupSessionDirectory(triggerId, reason = 'session cleanup') {
@@ -764,11 +843,11 @@ function cancelActiveRecording(reason, triggerId = null) {
     currentRecording = null;
 
     if (recording.finalizeTimer) {
-        clearTimeout(recording.finalizeTimer);
+        clearManagedTimeout(recording.finalizeTimer);
     }
 
     if (recording.forceKillTimer) {
-        clearTimeout(recording.forceKillTimer);
+        clearManagedTimeout(recording.forceKillTimer);
     }
 
     try {
@@ -1009,7 +1088,7 @@ function startMcpStatusMonitoring(context) {
     // Silent start - no logging to avoid focus stealing
     
     // Check MCP status every 2 seconds
-    statusCheckInterval = setInterval(() => {
+    statusCheckInterval = setManagedInterval(() => {
         checkMcpStatus();
     }, 2000);
     
@@ -1020,7 +1099,8 @@ function startMcpStatusMonitoring(context) {
     context.subscriptions.push({
         dispose: () => {
             if (statusCheckInterval) {
-                clearInterval(statusCheckInterval);
+                clearManagedInterval(statusCheckInterval);
+                statusCheckInterval = null;
             }
         }
     });
@@ -1069,7 +1149,7 @@ function startReviewGateIntegration(context) {
 
     // Use a more robust polling approach instead of fs.watchFile
     // fs.watchFile can miss rapid file creation/deletion cycles
-    const pollInterval = setInterval(() => {
+    const pollInterval = setManagedInterval(() => {
         processPendingTriggers(context);
     }, 250); // Check every 250ms for better performance
     
@@ -1080,13 +1160,14 @@ function startReviewGateIntegration(context) {
     context.subscriptions.push({
         dispose: () => {
             if (pollInterval) {
-                clearInterval(pollInterval);
+                clearManagedInterval(pollInterval);
+                reviewGateWatcher = null;
             }
         }
     });
     
     // Immediate check on startup
-    setTimeout(() => {
+    setManagedTimeout(() => {
         processPendingTriggers(context);
     }, 100);
     
@@ -1359,7 +1440,7 @@ function openReviewGatePopup(context, options = {}) {
         // Always use consistent title
         chatPanel.title = "Review Gate";
 
-        setTimeout(() => {
+        setManagedTimeout(() => {
             if (!chatPanel) {
                 return;
             }
@@ -1376,7 +1457,7 @@ function openReviewGatePopup(context, options = {}) {
         }, 100);
 
         if (autoFocus) {
-            setTimeout(() => {
+            setManagedTimeout(() => {
                 chatPanel.webview.postMessage({
                     command: 'focus'
                 });
@@ -1520,7 +1601,7 @@ function openReviewGatePopup(context, options = {}) {
 
     // Auto-focus if requested
     if (autoFocus) {
-        setTimeout(() => {
+        setManagedTimeout(() => {
             chatPanel.webview.postMessage({
                 command: 'focus'
             });
@@ -3091,11 +3172,11 @@ async function handleSpeechToText(audioData, triggerId, isFilePath = false) {
         const pollInterval = 500;
         let waitTime = 0;
         
-        const pollForResult = setInterval(() => {
+        const pollForResult = setManagedInterval(() => {
             const resultFile = getSessionFilePath('speechResponse', sessionTriggerId);
 
             if (!isSpeechSessionCurrent(sessionTriggerId)) {
-                clearInterval(pollForResult);
+                clearManagedInterval(pollForResult);
                 cleanupSessionSpeechArtifacts(sessionTriggerId, 'Ignored speech result for inactive session');
                 return;
             }
@@ -3126,7 +3207,7 @@ async function handleSpeechToText(audioData, triggerId, isFilePath = false) {
                     logMessage(`Error reading transcription result: ${error.message}`);
                 }
                 
-                clearInterval(pollForResult);
+                clearManagedInterval(pollForResult);
             }
             
             waitTime += pollInterval;
@@ -3138,7 +3219,7 @@ async function handleSpeechToText(audioData, triggerId, isFilePath = false) {
                         transcription: ''
                     });
                 }
-                clearInterval(pollForResult);
+                clearManagedInterval(pollForResult);
                 cleanupSessionSpeechArtifacts(sessionTriggerId, 'Speech transcription timeout');
             }
         }, pollInterval);
@@ -3214,7 +3295,7 @@ async function validateSoxSetup() {
                 });
                 
                 // Timeout for microphone test
-                setTimeout(() => {
+                setManagedTimeout(() => {
                     try {
                         micTestProcess.kill('SIGTERM');
                         resolve({ success: false, error: 'Microphone test timed out' });
@@ -3227,7 +3308,7 @@ async function validateSoxSetup() {
             });
             
             // Timeout for version check
-            setTimeout(() => {
+            setManagedTimeout(() => {
                 try {
                     testProcess.kill('SIGTERM');
                     resolve({ success: false, error: 'SoX version check timed out' });
@@ -3404,11 +3485,11 @@ function stopNodeRecording(triggerId) {
         recording.on('exit', (code, signal) => {
             logMessage(`SoX process exited trigger=${sessionTriggerId} code=${code} signal=${signal}`);
             if (recording.forceKillTimer) {
-                clearTimeout(recording.forceKillTimer);
+                clearManagedTimeout(recording.forceKillTimer);
             }
             
             // Give a moment for file system to sync
-            recording.finalizeTimer = setTimeout(() => {
+            recording.finalizeTimer = setManagedTimeout(() => {
                 logMessage(`Checking finalized audio file trigger=${sessionTriggerId} file=${path.basename(audioFile)}`);
 
                 if (!isSpeechSessionCurrent(sessionTriggerId)) {
@@ -3458,7 +3539,7 @@ function stopNodeRecording(triggerId) {
         });
         
         // Set a timeout in case the process doesn't exit gracefully
-        recording.forceKillTimer = setTimeout(() => {
+        recording.forceKillTimer = setManagedTimeout(() => {
             if (recording.pid) {
                 console.log(`⚠️ Force killing SoX process: ${recording.pid}`);
                 try {
@@ -3489,15 +3570,18 @@ function deactivate() {
     // Silent deactivation
     
     if (reviewGateWatcher) {
-        clearInterval(reviewGateWatcher);
+        clearManagedInterval(reviewGateWatcher);
+        reviewGateWatcher = null;
     }
     
     if (statusCheckInterval) {
-        clearInterval(statusCheckInterval);
+        clearManagedInterval(statusCheckInterval);
+        statusCheckInterval = null;
     }
 
     cancelActiveRecording('Extension deactivated');
     cleanupStaleSessionFiles(0);
+    clearManagedTimers();
     
     if (outputChannel) {
         outputChannel.dispose();
@@ -3506,5 +3590,24 @@ function deactivate() {
 
 module.exports = {
     activate,
-    deactivate
+    deactivate,
+    __testHooks: Object.freeze({
+        resetState,
+        processTriggerFile,
+        openReviewGatePopup,
+        handleImageUpload,
+        writeSessionResponse,
+        writeSessionResult,
+        validateSessionEnvelope,
+        validateInitialTriggerEnvelope,
+        getRuntimeRoot,
+        getSessionsRoot,
+        getSessionPath,
+        getSessionDir,
+        getSessionFilePath,
+        getExistingSessionFilePath,
+        getStatusFilePath,
+        getRuntimeSecretPath,
+        getSessionAudioPath
+    })
 }; 
