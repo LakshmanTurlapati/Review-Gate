@@ -101,6 +101,9 @@ const SESSION_FILE_NAMES = {
     speechResponse: 'review_gate_speech_response_{triggerId}.json'
 };
 const STATUS_FILE_NAME = 'review_gate_status.json';
+const RUNTIME_SECRET_FILE_NAME = 'review_gate_runtime_secret';
+const INITIAL_TRIGGER_MAX_AGE_MS = 15 * 1000;
+const STATUS_HEARTBEAT_MAX_AGE_MS = 30 * 1000;
 const SESSION_STALE_MAX_AGE_MS = 10 * 60 * 1000;
 const STALE_CLEANUP_INTERVAL_MS = 30 * 1000;
 
@@ -121,6 +124,10 @@ function getExistingSessionFilePath(kind, triggerId) {
 
 function getStatusFilePath() {
     return path.join(getRuntimeRoot(), STATUS_FILE_NAME);
+}
+
+function getRuntimeSecretPath() {
+    return path.join(getRuntimeRoot(), RUNTIME_SECRET_FILE_NAME);
 }
 
 function isPathWithinRuntimeRoot(candidatePath, runtimeRoot) {
@@ -333,6 +340,133 @@ function validateSessionEnvelope(envelope, options = {}) {
 function getSessionAudioPath(triggerId, timestamp = Date.now()) {
     const sessionId = getSessionId(triggerId);
     return path.join(getSessionDir(sessionId), `review_gate_audio_${sessionId}_${timestamp}.wav`);
+}
+
+function loadRuntimeSecret() {
+    const secretPath = assertSafeRuntimePath(getRuntimeSecretPath(), { expectFile: true });
+    const runtimeSecret = fs.readFileSync(secretPath, 'utf8').trim();
+    if (!runtimeSecret) {
+        throw new Error('Missing Review Gate runtime secret');
+    }
+    return runtimeSecret;
+}
+
+function readMcpStatusHeartbeat(maxAgeMs = STATUS_HEARTBEAT_MAX_AGE_MS) {
+    const statusPath = getStatusFilePath();
+    if (!fs.existsSync(statusPath)) {
+        throw new Error('Missing MCP status heartbeat');
+    }
+
+    const statusData = readJsonFileSafely(statusPath);
+    const heartbeatTimestamp = Date.parse(String(statusData.timestamp || '').trim());
+    const serverState = String(statusData.server_state || '').trim();
+    const source = String(statusData.source || '').trim();
+    const protocolVersion = String(statusData.protocol_version || '').trim();
+    const pid = Number(statusData.pid);
+
+    if (!Number.isFinite(heartbeatTimestamp) || !serverState) {
+        throw new Error('Malformed MCP status heartbeat');
+    }
+    if (protocolVersion !== IPC_PROTOCOL_VERSION) {
+        throw new Error(`Unexpected MCP status protocol: ${protocolVersion || 'missing'}`);
+    }
+    if (source !== 'review_gate_mcp_status') {
+        throw new Error(`Unexpected MCP status source: ${source || 'missing'}`);
+    }
+    if (!Number.isInteger(pid) || pid <= 0) {
+        throw new Error('Malformed MCP status heartbeat pid');
+    }
+
+    const heartbeatAgeMs = Date.now() - heartbeatTimestamp;
+    if (heartbeatAgeMs < 0 || heartbeatAgeMs > maxAgeMs) {
+        throw new Error('Stale MCP status heartbeat');
+    }
+
+    return {
+        ...statusData,
+        pid,
+        server_state: serverState,
+        protocol_version: protocolVersion,
+        source,
+        timestamp: new Date(heartbeatTimestamp).toISOString(),
+        heartbeatAgeMs
+    };
+}
+
+function buildInitialTriggerProofPayload(triggerData) {
+    return [
+        String(triggerData.trigger_id || '').trim(),
+        String(triggerData.protocol_version || '').trim(),
+        String(triggerData.session_token || '').trim(),
+        String(triggerData.timestamp || '').trim(),
+        String(triggerData.pid || '').trim(),
+        String((triggerData.data && triggerData.data.tool) || '').trim()
+    ].join('\n');
+}
+
+function verifyInitialTrigger(triggerData, runtimeSecret) {
+    const providedSignature = String(triggerData.trigger_signature || '').trim().toLowerCase();
+    if (!/^[a-f0-9]{64}$/.test(providedSignature)) {
+        return false;
+    }
+
+    const expectedSignature = crypto
+        .createHmac('sha256', runtimeSecret)
+        .update(buildInitialTriggerProofPayload(triggerData))
+        .digest('hex');
+
+    return crypto.timingSafeEqual(
+        Buffer.from(providedSignature, 'hex'),
+        Buffer.from(expectedSignature, 'hex')
+    );
+}
+
+function validateInitialTriggerEnvelope(triggerData) {
+    const triggerIssuedAt = String(triggerData.trigger_issued_at || '').trim();
+    const timestamp = String(triggerData.timestamp || '').trim();
+    if (!triggerIssuedAt || triggerIssuedAt !== timestamp) {
+        throw new Error('Initial trigger timestamp mismatch');
+    }
+
+    const issuedAtMs = Date.parse(triggerIssuedAt);
+    if (!Number.isFinite(issuedAtMs)) {
+        throw new Error('Initial trigger freshness timestamp is invalid');
+    }
+
+    const triggerAgeMs = Date.now() - issuedAtMs;
+    if (triggerAgeMs < 0 || triggerAgeMs > INITIAL_TRIGGER_MAX_AGE_MS) {
+        throw new Error('Initial trigger freshness window expired');
+    }
+
+    const triggerPid = Number(triggerData.pid);
+    if (!Number.isInteger(triggerPid) || triggerPid <= 0) {
+        throw new Error('Initial trigger pid is invalid');
+    }
+
+    const toolName = String((triggerData.data && triggerData.data.tool) || '').trim();
+    if (!toolName) {
+        throw new Error('Initial trigger is missing tool name');
+    }
+
+    const statusData = readMcpStatusHeartbeat();
+    if (['shutting_down', 'stopped'].includes(statusData.server_state)) {
+        throw new Error(`Initial trigger rejected for MCP state ${statusData.server_state}`);
+    }
+    if (statusData.pid !== triggerPid) {
+        throw new Error('Initial trigger pid does not match active MCP heartbeat');
+    }
+
+    const runtimeSecret = loadRuntimeSecret();
+    if (!verifyInitialTrigger(triggerData, runtimeSecret)) {
+        throw new Error('Initial trigger signature mismatch');
+    }
+
+    return {
+        ...triggerData,
+        pid: triggerPid,
+        trigger_issued_at: triggerIssuedAt,
+        trigger_signature: String(triggerData.trigger_signature || '').trim()
+    };
 }
 
 function listPendingTriggerFiles() {
@@ -903,15 +1037,8 @@ function checkMcpStatus() {
             return;
         }
 
-        const statusData = readJsonFileSafely(statusPath);
-        const heartbeatTimestamp = Date.parse(String(statusData.timestamp || ''));
-        const serverState = String(statusData.server_state || '').trim();
-        if (!Number.isFinite(heartbeatTimestamp) || !serverState) {
-            throw new Error('Malformed MCP status heartbeat');
-        }
-
-        const heartbeatAge = Date.now() - heartbeatTimestamp;
-        const nextStatus = heartbeatAge < 30000 && !['shutting_down', 'stopped'].includes(serverState);
+        const statusData = readMcpStatusHeartbeat();
+        const nextStatus = !['shutting_down', 'stopped'].includes(statusData.server_state);
         if (nextStatus !== mcpStatus) {
             mcpStatus = nextStatus;
             updateChatPanelStatus();
@@ -1001,41 +1128,50 @@ function processTriggerFile(context, filePath) {
             return false;
         }
 
-        if (activeMcpSession && activeMcpSession.triggerId !== triggerData.trigger_id) {
+        let validatedTriggerData;
+        try {
+            validatedTriggerData = validateInitialTriggerEnvelope(triggerData);
+        } catch (validationError) {
+            logMessage(`Rejected trigger=${triggerData.trigger_id} reason=invalid_trigger_proof`);
+            removeSessionFile(filePath, 'Rejected unauthenticated trigger file');
+            return false;
+        }
+
+        if (activeMcpSession && activeMcpSession.triggerId !== validatedTriggerData.trigger_id) {
             const busyMessage = `Review Gate popup is already handling trigger ${activeMcpSession.triggerId}`;
             const triggerContract = {
-                triggerId: triggerData.trigger_id,
-                sessionToken: triggerData.session_token,
-                protocolVersion: triggerData.protocol_version
+                triggerId: validatedTriggerData.trigger_id,
+                sessionToken: validatedTriggerData.session_token,
+                protocolVersion: validatedTriggerData.protocol_version
             };
 
-            sendExtensionAcknowledgement(triggerData.trigger_id, triggerData.data.tool, {
+            sendExtensionAcknowledgement(validatedTriggerData.trigger_id, validatedTriggerData.data.tool, {
                 acknowledged: false,
                 status: 'busy',
                 message: busyMessage,
                 ownerTriggerId: activeMcpSession.triggerId
             }, triggerContract);
-            writeSessionResult(triggerData.trigger_id, 'busy', {
+            writeSessionResult(validatedTriggerData.trigger_id, 'busy', {
                 eventType: 'SESSION_BUSY',
                 message: busyMessage,
                 ownerTriggerId: activeMcpSession.triggerId,
                 ownerMessage: activeMcpSession.message || null,
-                toolType: triggerData.data.tool
+                toolType: validatedTriggerData.data.tool
             }, triggerContract);
 
-            handledTriggerIds.add(triggerData.trigger_id);
+            handledTriggerIds.add(validatedTriggerData.trigger_id);
             removeSessionFile(filePath, 'Rejected busy trigger file');
             return true;
         }
 
-        logMessage(`Review Gate triggered tool=${triggerData.data.tool} trigger=${triggerData.trigger_id}`);
+        logMessage(`Review Gate triggered tool=${validatedTriggerData.data.tool} trigger=${validatedTriggerData.trigger_id}`);
 
-        handleReviewGateToolCall(context, triggerData.data, {
-            triggerId: triggerData.trigger_id,
-            sessionToken: triggerData.session_token,
-            protocolVersion: triggerData.protocol_version
+        handleReviewGateToolCall(context, validatedTriggerData.data, {
+            triggerId: validatedTriggerData.trigger_id,
+            sessionToken: validatedTriggerData.session_token,
+            protocolVersion: validatedTriggerData.protocol_version
         });
-        handledTriggerIds.add(triggerData.trigger_id);
+        handledTriggerIds.add(validatedTriggerData.trigger_id);
         removeSessionFile(filePath, 'Consumed trigger file');
         return true;
     } catch (error) {

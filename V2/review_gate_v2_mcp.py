@@ -11,10 +11,13 @@ Requirements:
 
 import asyncio
 import getpass
+import hashlib
+import hmac
 import json
 import sys
 import logging
 import os
+import secrets
 import shutil
 import stat
 import time
@@ -126,12 +129,18 @@ SESSION_FILE_NAMES = {
 }
 IPC_PROTOCOL_VERSION = "review-gate-v2-session-v1"
 STATUS_FILE_NAME = "review_gate_status.json"
+RUNTIME_SECRET_FILE_NAME = "review_gate_runtime_secret"
 
 
 def _session_file(kind: str, trigger_id: str) -> Path:
     """Return the canonical session-scoped IPC path for a trigger."""
     session_token = _session_token(trigger_id)
     return _session_dir(session_token) / SESSION_FILE_NAMES[kind].format(trigger_id=session_token)
+
+
+def _runtime_secret_file() -> Path:
+    """Return the runtime-owned secret file used to authenticate initial MCP triggers."""
+    return get_runtime_root() / RUNTIME_SECRET_FILE_NAME
 
 
 def _session_glob(kind: str) -> str:
@@ -273,6 +282,7 @@ class ReviewGateServer:
         self._session_contracts: Dict[str, Dict[str, str]] = {}
         self._heartbeat_count = 0
         self._whisper_model = None
+        self._runtime_secret: Optional[str] = None
         
         # Initialize Whisper model with comprehensive error handling
         self._whisper_error = None
@@ -401,6 +411,69 @@ class ReviewGateServer:
             "protocol_version": contract["protocol_version"],
             "session_token": contract["session_token"],
         }
+
+    def _load_runtime_secret(self) -> str:
+        """Load or create the runtime secret used to authenticate initial trigger envelopes."""
+        if self._runtime_secret:
+            return self._runtime_secret
+
+        secret_path = _runtime_secret_file()
+        _ensure_private_directory(secret_path.parent)
+
+        if secret_path.exists():
+            _validate_runtime_path(secret_path, expect_file=True)
+            secret_value = secret_path.read_text(encoding="utf-8").strip()
+            if secret_value:
+                if os.name != 'nt':
+                    try:
+                        os.chmod(secret_path, 0o600)
+                    except OSError:
+                        pass
+                self._runtime_secret = secret_value
+                return secret_value
+
+        secret_value = secrets.token_hex(32)
+        file_descriptor = os.open(str(secret_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            with os.fdopen(file_descriptor, "w", encoding="utf-8") as secret_handle:
+                secret_handle.write(secret_value)
+                secret_handle.flush()
+                os.fsync(secret_handle.fileno())
+        finally:
+            if os.name != 'nt':
+                try:
+                    os.chmod(secret_path, 0o600)
+                except OSError:
+                    pass
+
+        self._runtime_secret = secret_value
+        return secret_value
+
+    def _build_initial_trigger_signature(
+        self,
+        *,
+        trigger_id: str,
+        protocol_version: str,
+        session_token: str,
+        timestamp: str,
+        pid: int,
+        tool_name: str,
+    ) -> str:
+        """Return the HMAC proof for a new MCP trigger before the extension accepts it."""
+        secret_value = self._load_runtime_secret()
+        payload = "\n".join([
+            str(trigger_id).strip(),
+            str(protocol_version).strip(),
+            str(session_token).strip(),
+            str(timestamp).strip(),
+            str(pid),
+            str(tool_name).strip(),
+        ])
+        return hmac.new(
+            secret_value.encode("utf-8"),
+            payload.encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
 
     def _validate_session_envelope(
         self,
@@ -1361,20 +1434,38 @@ class ReviewGateServer:
                 logger.error("❌ Trigger data missing trigger_id")
                 return False
 
+            tool_name = str(data.get("tool") or "").strip()
+            if not tool_name:
+                logger.error("❌ Trigger data missing tool name")
+                return False
+
             self._cleanup_session_directory(trigger_id)
             trigger_file = _session_file("trigger", trigger_id)
             session_contract = self._create_session_contract(trigger_id)
+            trigger_timestamp = str(data.get("timestamp") or datetime.now().isoformat()).strip()
+            trigger_pid = os.getpid()
+            trigger_signature = self._build_initial_trigger_signature(
+                trigger_id=session_contract["trigger_id"],
+                protocol_version=session_contract["protocol_version"],
+                session_token=session_contract["session_token"],
+                timestamp=trigger_timestamp,
+                pid=trigger_pid,
+                tool_name=tool_name,
+            )
+            trigger_payload = {**data, "timestamp": trigger_timestamp}
             
             trigger_data = {
-                "timestamp": datetime.now().isoformat(),
+                "timestamp": trigger_timestamp,
+                "trigger_issued_at": trigger_timestamp,
+                "trigger_signature": trigger_signature,
                 "system": "review-gate-v2",
                 "editor": "cursor",
                 "source": "review_gate_mcp",
                 "trigger_id": session_contract["trigger_id"],
                 "protocol_version": session_contract["protocol_version"],
                 "session_token": session_contract["session_token"],
-                "data": data,
-                "pid": os.getpid(),
+                "data": trigger_payload,
+                "pid": trigger_pid,
                 "active_window": True,
                 "mcp_integration": True,
                 "immediate_activation": True
