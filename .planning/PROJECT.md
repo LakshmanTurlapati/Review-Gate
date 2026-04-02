@@ -24,10 +24,10 @@ Keep the human and agent in the same working loop until the human says the task 
 - ✓ Active IPC, speech, and audio artifacts now live under Review Gate-owned per-session runtime directories with whole-session cleanup. - validated in Phase 3
 - ✓ Initial trigger intake now requires runtime-secret proof, authenticated follow-up envelopes, and popup rendering without external assets or unsafe HTML assembly. - validated in Phase 3
 - ✓ Maintainers can now run automated Python server, Node extension, and installer/config regression suites from the repo root before release. - validated in Phase 4
+- ✓ Release metadata, installers, docs, and regression checks now align on one canonical Review Gate V2 artifact path and supported rule file. - validated in Phase 5
 
 ### Active
 
-- [ ] Reduce release drift by making docs, artifacts, and supported runtime surface match the actual shipped behavior.
 - [ ] Complete native macOS and Windows install smoke validation for the corrected Phase 1 installer flows.
 - [ ] Complete live Cursor popup validation for the new Phase 2 busy/cancel/timeout routing behavior.
 - [ ] Complete live Cursor security validation for the hardened Phase 3 image, speech, and forged-IPC rejection flows.
@@ -64,6 +64,7 @@ Keep the human and agent in the same working loop until the human says the task 
 | Standardize active popup routing on trigger-scoped temp files with explicit busy and cancel outcomes | Phase 2 needed deterministic session ownership before security hardening or test automation could be trusted | ✓ Good |
 | Harden local IPC in layers: scoped runtime directories first, authenticated envelopes second, popup CSP and DOM safety third, then a final proof gate for initial triggers | Phase 3 needed to close both storage exposure and trust-boundary gaps without replacing the transport or redesigning the extension | ✓ Good |
 | Keep verification low-friction with stdlib Python, built-in Node test tooling, and smoke-mode installers instead of adopting heavyweight test infrastructure first | Phase 4 needed repeatable coverage that matches the current repo and can run immediately on developer machines | ✓ Good |
+| Centralize release metadata in `V2/release-manifest.json` and treat `V2/review-gate-v2-2.7.3.vsix` as the only supported shipped artifact | Phase 5 needed to eliminate duplicate release surfaces before the milestone could be considered shippable | ✓ Good |
 
 ## Evolution
 
@@ -83,4 +84,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-04-02 after Phase 4*
+*Last updated: 2026-04-02 after Phase 5*

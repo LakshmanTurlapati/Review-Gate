@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: executing
-stopped_at: Phase 04 complete; Phase 05 ready to plan
-last_updated: "2026-04-02T22:08:07.430Z"
+status: completed
+stopped_at: Phase 05 complete; milestone ready for audit -> complete -> cleanup lifecycle
+last_updated: "2026-04-02T22:23:27Z"
 last_activity: 2026-04-02
 progress:
   total_phases: 5
-  completed_phases: 4
-  total_plans: 13
-  completed_plans: 13
-  percent: 80
+  completed_phases: 5
+  total_plans: 16
+  completed_plans: 16
+  percent: 100
 ---
 
 # Project State
@@ -21,24 +21,24 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-02)
 
 **Core value:** Keep the human and agent in the same working loop until the human says the task is complete.
-**Current focus:** Phase 5 - Canonical Release Surface
+**Current focus:** Milestone lifecycle (audit -> complete -> cleanup)
 
 ## Current Position
 
-Phase: 5 of 5 (canonical release surface)
-Plan: Not started
-Status: Ready to plan
+Phase: Complete
+Plan: All 16 plans complete
+Status: Ready for milestone lifecycle
 Last activity: 2026-04-02
 
-Progress: [████████░░] 80%
+Progress: [██████████] 100%
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 12
-- Average duration: 5.6 min
-- Total execution time: 1.1 hours
+- Total plans completed: 16
+- Average duration: 1 session
+- Total execution time: milestone complete
 
 **By Phase:**
 
@@ -47,12 +47,13 @@ Progress: [████████░░] 80%
 | 01 | 4 | 10 min | 2.5 min |
 | 02 | 2 | 14 min | 7.0 min |
 | 03 | 4 | 31 min | 7.75 min |
-| 04 | 2 | 13 min | 6.5 min |
+| 04 | 3 | 13 min | 4.3 min |
+| 05 | 3 | 1 session | 1 session |
 
 **Recent Trend:**
 
-- Last 5 plans: 03-02, 03-03, 03-04, 04-01, 04-02
-- Trend: Active
+- Last 5 plans: 04-02, 04-03, 05-01, 05-02, 05-03
+- Trend: Complete
 
 *Updated after each plan completion*
 | Phase 01 P01 | 2min | 2 tasks | 1 file |
@@ -68,6 +69,9 @@ Progress: [████████░░] 80%
 | Phase 04 P01 | 3min | 2 tasks | 2 files |
 | Phase 04 P02 | 10min | 2 tasks | 3 files |
 | Phase 04 P03 | 4min | 3 tasks | 6 files |
+| Phase 05 P01 | 1 session | 2 tasks | 5 files |
+| Phase 05 P02 | 1 session | 2 tasks | 4 files |
+| Phase 05 P03 | 1 session | 2 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -105,6 +109,10 @@ Recent decisions affecting current work:
 - [Phase 04]: Used one explicit REVIEW_GATE_SMOKE contract across all installers so smoke runs redirect temp roots and skip real workstation side effects.
 - [Phase 04]: Kept installer verification in stdlib unittest plus subprocess so the phase reused the shipped shell entrypoints directly.
 - [Phase 04]: Made the repo-root runner call the established 04-01, 04-02, and 04-03 suites instead of creating a separate verification path.
+- [Phase 05]: Centralized release metadata in `V2/release-manifest.json` and made `scripts/package_review_gate_vsix.py` the shared field and packaging seam for installers, docs, and maintainers.
+- [Phase 05]: Removed the committed `V2/cursor-extension/` VSIX and treated the extension workspace strictly as a build directory while keeping `V2/review-gate-v2-2.7.3.vsix` authoritative.
+- [Phase 05]: Installers now fail explicitly when the canonical root artifact is missing, and smoke tests stage temp repos that prove there is no hidden workspace-VSIX fallback.
+- [Phase 05]: Added `tests/python/test_release_surface.py` and extended the repo-root runner so release-surface validation is part of the default shipped regression path.
 
 ### Pending Todos
 
@@ -119,6 +127,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-02T22:08:07.430Z
-Stopped at: Phase 04 complete with all automated verification passing; Phase 05 ready to plan
+Last session: 2026-04-02T22:23:27Z
+Stopped at: Phase 05 complete; proceed to milestone audit, archive, and cleanup
 Resume file: None

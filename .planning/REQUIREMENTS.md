@@ -29,7 +29,7 @@
 - [x] **QUAL-01**: Maintainer can run automated tests for the Python server's trigger, acknowledgement, response, and timeout behavior.
 - [x] **QUAL-02**: Maintainer can run automated tests for the Cursor extension's popup lifecycle, session routing, and attachment handling.
 - [x] **QUAL-03**: Maintainer can run repeatable smoke checks for supported installers and confirm MCP configuration merge behavior.
-- [ ] **REL-01**: Maintainer can produce one canonical VSIX artifact and documentation that matches the shipped version and supported rule file.
+- [x] **REL-01**: Maintainer can produce one canonical VSIX artifact and documentation that matches the shipped version and supported rule file.
 
 ## v2 Requirements
 
@@ -64,7 +64,7 @@
 | QUAL-01 | Phase 4 | Complete |
 | QUAL-02 | Phase 4 | Complete |
 | QUAL-03 | Phase 4 | Complete |
-| REL-01 | Phase 5 | Pending |
+| REL-01 | Phase 5 | Complete |
 
 **Coverage:**
 - v1 requirements: 14 total
@@ -73,4 +73,4 @@
 
 ---
 *Requirements defined: 2026-04-02*
-*Last updated: 2026-04-02 after Phase 4*
+*Last updated: 2026-04-02 after Phase 5*

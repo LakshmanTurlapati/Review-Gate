@@ -15,8 +15,8 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 1: Installation Integrity** - Make cross-platform installation use current assets and preserve existing user configuration.
 - [x] **Phase 2: Session Routing Reliability** - Ensure the active Review Gate request owns its trigger, response, and recovery path.
 - [x] **Phase 3: Scoped IPC Security** - Restrict local IPC and transient storage to authenticated, per-session behavior.
-- [ ] **Phase 4: Automated Hardening Verification** - Add repeatable automated checks across server, extension, and installer flows.
-- [ ] **Phase 5: Canonical Release Surface** - Make shipped artifacts and docs match one supported runtime path.
+- [x] **Phase 4: Automated Hardening Verification** - Add repeatable automated checks across server, extension, and installer flows.
+- [x] **Phase 5: Canonical Release Surface** - Make shipped artifacts and docs match one supported runtime path.
 
 ## Phase Details
 
@@ -29,7 +29,12 @@ Decimal phases appear between their surrounding integers in numeric order.
   2. User can install on default macOS without needing GNU `timeout` or manual script edits.
   3. User can install on Windows without unrelated MCP server entries being removed from the user's Cursor MCP configuration.
   4. User installs the current V2 rule and current VSIX artifact from filenames and paths that match the shipped repository contents.
-**Plans**: TBD
+**Plans**: 4 plans
+Plans:
+- [x] 01-01-PLAN.md - Correct dependency specifier quoting and installer/runtime asset names so V2 installation targets the shipped files.
+- [x] 01-02-PLAN.md - Preserve existing Cursor MCP server entries on Windows install and uninstall by updating only `review-gate-v2`.
+- [x] 01-03-PLAN.md - Align install, uninstall, and docs to the current `ReviewGateV2.mdc` rule and current V2 VSIX filenames.
+- [x] 01-04-PLAN.md - Document the corrected install surface and add source-level checks for the Phase 1 truths.
 
 ### Phase 2: Session Routing Reliability
 **Goal**: Users can complete Review Gate popup round-trips without concurrent or stale sessions corrupting the active exchange.
@@ -84,9 +89,9 @@ Plans:
   3. Users and maintainers no longer need to guess which artifact, version string, or rule path is supported for release.
 **Plans**: 3 plans
 Plans:
-- [ ] 05-01-PLAN.md - Establish one canonical VSIX contract and packaging output under `V2/`.
-- [ ] 05-02-PLAN.md - Rewire installers and smoke coverage to consume only the canonical release surface.
-- [ ] 05-03-PLAN.md - Align public docs and gate the narrowed release surface through the repo-root regression runner.
+- [x] 05-01-PLAN.md - Establish one canonical VSIX contract and packaging output under `V2/`.
+- [x] 05-02-PLAN.md - Rewire installers and smoke coverage to consume only the canonical release surface.
+- [x] 05-03-PLAN.md - Align public docs and gate the narrowed release surface through the repo-root regression runner.
 
 ## Progress
 
@@ -98,5 +103,5 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5
 | 1. Installation Integrity | 4/4 | Complete | 2026-04-02 |
 | 2. Session Routing Reliability | 2/2 | Complete | 2026-04-02 |
 | 3. Scoped IPC Security | 4/4 | Complete | 2026-04-02 |
-| 4. Automated Hardening Verification | 2/3 | In Progress | - |
-| 5. Canonical Release Surface | 0/TBD | Not started | - |
+| 4. Automated Hardening Verification | 3/3 | Complete | 2026-04-02 |
+| 5. Canonical Release Surface | 3/3 | Complete | 2026-04-02 |
