@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Completed 04-01-PLAN.md
-last_updated: "2026-04-02T21:47:40.873Z"
+stopped_at: Completed 04-02-PLAN.md
+last_updated: "2026-04-02T21:48:53.418Z"
 last_activity: 2026-04-02
 progress:
   total_phases: 5
   completed_phases: 3
   total_plans: 13
-  completed_plans: 11
-  percent: 85
+  completed_plans: 12
+  percent: 92
 ---
 
 # Project State
@@ -26,19 +26,19 @@ See: .planning/PROJECT.md (updated 2026-04-02)
 ## Current Position
 
 Phase: 4 of 5 (automated hardening verification)
-Plan: 2 of 3
+Plan: 3 of 3
 Status: Ready to execute
 Last activity: 2026-04-02
 
-Progress: [█████████░] 85%
+Progress: [█████████░] 92%
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 11
-- Average duration: 5.3 min
-- Total execution time: 1.0 hours
+- Total plans completed: 12
+- Average duration: 5.6 min
+- Total execution time: 1.1 hours
 
 **By Phase:**
 
@@ -47,11 +47,11 @@ Progress: [█████████░] 85%
 | 01 | 4 | 10 min | 2.5 min |
 | 02 | 2 | 14 min | 7.0 min |
 | 03 | 4 | 31 min | 7.75 min |
-| 04 | 1 | 3 min | 3.0 min |
+| 04 | 2 | 13 min | 6.5 min |
 
 **Recent Trend:**
 
-- Last 5 plans: 03-01, 03-02, 03-03, 03-04, 04-01
+- Last 5 plans: 03-02, 03-03, 03-04, 04-01, 04-02
 - Trend: Active
 
 *Updated after each plan completion*
@@ -66,6 +66,7 @@ Progress: [█████████░] 85%
 | Phase 03 P03 | 10 min | 2 tasks | 1 files |
 | Phase 03 P04 | 10 min | 2 tasks | 2 files |
 | Phase 04 P01 | 3min | 2 tasks | 2 files |
+| Phase 04 P02 | 10min | 2 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -97,6 +98,9 @@ Recent decisions affecting current work:
 - [Phase 04]: Kept production code untouched and moved the import seam into tests/python/review_gate_test_loader.py with stubbed MCP and Whisper modules.
 - [Phase 04]: Drove coverage through real session files and IsolatedAsyncioTestCase instead of launching Cursor or mocking the server wait loops.
 - [Phase 04]: Kept macOS /tmp symlink handling inside the loader's isolated test runtime instead of changing production path validation.
+- [Phase 04]: Kept the extension monolithic and exposed only a narrow __testHooks seam for resettable Node regression tests.
+- [Phase 04]: Ran extension regressions through real temp-session files under a stubbed vscode host instead of Cursor UI automation or third-party JS test frameworks.
+- [Phase 04]: Resolved runtime path validation against realpaths so hardened temp-root checks still accept legitimate macOS /tmp session files.
 
 ### Pending Todos
 
@@ -104,13 +108,13 @@ None yet.
 
 ### Blockers/Concerns
 
-- No automated regression harness exists yet for the Cursor extension or installer matrix.
+- No automated regression harness exists yet for the installer matrix.
 - Phase 01 still has pending native macOS and Windows smoke tests captured in `01-HUMAN-UAT.md`.
 - Phase 02 still has pending live Cursor popup checks captured in `02-HUMAN-UAT.md`.
 - Phase 03 still has pending live Cursor security checks captured in `03-HUMAN-UAT.md`.
 
 ## Session Continuity
 
-Last session: 2026-04-02T21:47:09.838Z
-Stopped at: Completed 04-01-PLAN.md
+Last session: 2026-04-02T21:48:53.409Z
+Stopped at: Completed 04-02-PLAN.md
 Resume file: None
