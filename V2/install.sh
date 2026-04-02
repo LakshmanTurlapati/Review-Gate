@@ -24,6 +24,38 @@ log_progress() { echo -e "${CYAN}PROGRESS: $1${NC}"; }
 log_warning() { echo -e "${YELLOW}WARNING: $1${NC}"; }
 log_step() { echo -e "${WHITE}$1${NC}"; }
 
+run_with_timeout() {
+    local timeout_seconds="$1"
+    shift
+
+    if command -v gtimeout &> /dev/null; then
+        gtimeout "${timeout_seconds}s" "$@"
+        return $?
+    fi
+
+    if command -v timeout &> /dev/null; then
+        timeout "${timeout_seconds}s" "$@"
+        return $?
+    fi
+
+    python3 - "$timeout_seconds" "$@" <<'PY'
+import subprocess
+import sys
+
+timeout_seconds = float(sys.argv[1])
+command = sys.argv[2:]
+
+try:
+    completed = subprocess.run(command, timeout=timeout_seconds, check=False)
+except subprocess.TimeoutExpired:
+    sys.exit(124)
+except FileNotFoundError:
+    sys.exit(127)
+
+sys.exit(completed.returncode)
+PY
+}
+
 # Get script directory
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
 
@@ -71,6 +103,18 @@ else
     log_success "SoX already installed"
 fi
 
+# Check if Python 3 is available
+if ! command -v python3 &> /dev/null; then
+    log_error "Python 3 is required but not installed"
+    log_info "Please install Python 3 and run this script again"
+    exit 1
+else
+    log_success "Python 3 found: $(python3 --version)"
+fi
+
+TEMP_DIR=$(python3 -c 'import tempfile; print(tempfile.gettempdir())')
+SOX_TEST_FILE="$TEMP_DIR/sox_test_$$.wav"
+
 # Validate SoX installation and microphone access
 log_progress "Validating SoX and microphone setup..."
 if command -v sox &> /dev/null; then
@@ -79,11 +123,11 @@ if command -v sox &> /dev/null; then
     
     # Test microphone access (quick test)
     log_progress "Testing microphone access..."
-    if timeout 3s sox -d -r 16000 -c 1 /tmp/sox_test_$$.wav trim 0 0.1 2>/dev/null; then
-        rm -f /tmp/sox_test_$$.wav
+    if run_with_timeout 3 sox -d -r 16000 -c 1 "$SOX_TEST_FILE" trim 0 0.1 2>/dev/null; then
+        rm -f "$SOX_TEST_FILE"
         log_success "Microphone access test successful"
     else
-        rm -f /tmp/sox_test_$$.wav
+        rm -f "$SOX_TEST_FILE"
         log_warning "Microphone test failed - speech features may not work"
         log_info "Common fixes:"
         log_step "   - Grant microphone permissions to Terminal/iTerm"
@@ -98,15 +142,6 @@ else
     else
         log_info "Try: sudo apt-get install sox"
     fi
-fi
-
-# Check if Python 3 is available
-if ! command -v python3 &> /dev/null; then
-    log_error "Python 3 is required but not installed"
-    log_info "Please install Python 3 and run this script again"
-    exit 1
-else
-    log_success "Python 3 found: $(python3 --version)"
 fi
 
 # Create global Cursor extensions directory
@@ -264,17 +299,15 @@ fi
 # Test MCP server
 log_progress "Testing MCP server..."
 cd "$REVIEW_GATE_DIR"
-source venv/bin/activate
-TEMP_DIR=$(python3 -c 'import tempfile; print(tempfile.gettempdir())')
-timeout 5s python review_gate_v2_mcp.py > "$TEMP_DIR/mcp_test.log" 2>&1 || true
-deactivate
+MCP_TEST_LOG="$TEMP_DIR/mcp_test.log"
+run_with_timeout 5 "$VENV_PYTHON" "$REVIEW_GATE_DIR/review_gate_v2_mcp.py" > "$MCP_TEST_LOG" 2>&1 || true
 
-if grep -q "Review Gate 2.0 server initialized" "$TEMP_DIR/mcp_test.log"; then
+if grep -q "Review Gate 2.0 server initialized" "$MCP_TEST_LOG"; then
     log_success "MCP server test successful"
 else
     log_warning "MCP server test inconclusive (may be normal)"
 fi
-rm -f "$TEMP_DIR/mcp_test.log"
+rm -f "$MCP_TEST_LOG"
 
 # Install Cursor extension
 EXTENSION_FILE="$SCRIPT_DIR/cursor-extension/review-gate-v2-2.7.3.vsix"
