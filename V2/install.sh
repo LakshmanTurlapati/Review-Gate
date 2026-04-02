@@ -62,6 +62,8 @@ env_flag_enabled() {
 
 # Get script directory
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+RELEASE_HELPER="$REPO_ROOT/scripts/package_review_gate_vsix.py"
 SMOKE_MODE=false
 SKIP_DEP_INSTALL=false
 SKIP_EXTENSION_INSTALL=false
@@ -153,6 +155,10 @@ if ! command -v python3 &> /dev/null; then
 else
     log_success "Python 3 found: $(python3 --version)"
 fi
+
+read_release_field() {
+    python3 "$RELEASE_HELPER" --field "$1"
+}
 
 TEMP_DIR=$(python3 -c 'import tempfile; print(tempfile.gettempdir())')
 SOX_TEST_FILE="$TEMP_DIR/sox_test_$$.wav"
@@ -369,21 +375,18 @@ fi
 rm -f "$MCP_TEST_LOG"
 
 # Install Cursor extension
-EXTENSION_VERSION="2.7.3"
-EXTENSION_BASENAME="review-gate-v2-2.7.3.vsix"
-EXTENSION_FILE=""
-for extension_candidate in \
-    "$SCRIPT_DIR/$EXTENSION_BASENAME" \
-    "$SCRIPT_DIR/cursor-extension/$EXTENSION_BASENAME"
-do
-    if [[ -f "$extension_candidate" ]]; then
-        EXTENSION_FILE="$extension_candidate"
-        break
-    fi
-done
+if [[ ! -f "$RELEASE_HELPER" ]]; then
+    log_error "Release helper not found: $RELEASE_HELPER"
+    exit 1
+fi
+
+EXTENSION_BASENAME="$(read_release_field artifact_basename)"
+CANONICAL_VSIX_REPO_PATH="$(read_release_field canonical_vsix_path)"
+RULE_REPO_PATH="$(read_release_field rule_path)"
+EXTENSION_FILE="$REPO_ROOT/$CANONICAL_VSIX_REPO_PATH"
 INSTALLED_EXTENSION_FILE="$REVIEW_GATE_DIR/$EXTENSION_BASENAME"
 
-if [[ -n "$EXTENSION_FILE" ]]; then
+if [[ -f "$EXTENSION_FILE" ]]; then
     log_progress "Installing Cursor extension..."
     
     # Copy extension to installation directory
@@ -426,8 +429,8 @@ if [[ -n "$EXTENSION_FILE" ]]; then
         fi
     fi
 else
-    log_error "Extension file not found. Checked: $SCRIPT_DIR/$EXTENSION_BASENAME and $SCRIPT_DIR/cursor-extension/$EXTENSION_BASENAME"
-    log_info "Please ensure one of the shipped VSIX files exists before running the installer again"
+    log_error "Canonical extension file not found: $EXTENSION_FILE"
+    log_info "Package the canonical release artifact with: (cd \"$SCRIPT_DIR/cursor-extension\" && npm run package)"
     exit 1
 fi
 
@@ -438,16 +441,15 @@ elif [[ "$OS" == "linux" ]]; then
     CURSOR_RULES_DIR="$HOME/.config/Cursor/User/rules"
 fi
 
-RULE_FILENAME="ReviewGateV2.mdc"
-RULE_SOURCE_FILE="$SCRIPT_DIR/$RULE_FILENAME"
+RULE_FILENAME="$(basename "$RULE_REPO_PATH")"
+RULE_SOURCE_FILE="$REPO_ROOT/$RULE_REPO_PATH"
 if [[ -f "$RULE_SOURCE_FILE" ]] && [[ -n "$CURSOR_RULES_DIR" ]]; then
     log_progress "Installing global rule..."
     mkdir -p "$CURSOR_RULES_DIR"
     cp "$RULE_SOURCE_FILE" "$CURSOR_RULES_DIR/$RULE_FILENAME"
     log_success "Global rule installed to: $CURSOR_RULES_DIR/$RULE_FILENAME"
-elif [[ -f "$RULE_SOURCE_FILE" ]]; then
-    log_warning "Could not determine Cursor rules directory for this platform"
-    log_info "Global rule available at: $RULE_SOURCE_FILE"
+else
+    log_warning "Global rule file not found: $RULE_SOURCE_FILE"
 fi
 
 # Clean up any existing temp files

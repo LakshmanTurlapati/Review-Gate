@@ -16,6 +16,8 @@ function Write-Header-Log { param([string]$Message) Write-Host "$Message" -Foreg
 
 # Get script directory
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$RepoRoot = Split-Path -Parent $ScriptDir
+$ReleaseHelper = Join-Path $RepoRoot "scripts\package_review_gate_vsix.py"
 $SmokeMode = $env:REVIEW_GATE_SMOKE -eq "1"
 $SkipDepInstall = $SmokeMode -or ($env:REVIEW_GATE_SKIP_DEP_INSTALL -eq "1")
 $SkipExtensionInstall = $SmokeMode -or ($env:REVIEW_GATE_SKIP_EXTENSION_INSTALL -eq "1")
@@ -169,6 +171,16 @@ if (-not (Get-Command python -ErrorAction SilentlyContinue) -and -not (Get-Comma
         Write-Error-Log "Python is installed but not working correctly"
         exit 1
     }
+}
+
+function Get-ReleaseField {
+    param([string]$Field)
+
+    $value = & $pythonCmd $ReleaseHelper --field $Field
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to read release metadata field '$Field'"
+    }
+    return $value.Trim()
 }
 
 # Create global Cursor extensions directory
@@ -364,21 +376,17 @@ if ($SkipServerSmoke) {
 }
 
 # Install Cursor extension
-$ExtensionVersion = "2.7.3"
-$ExtensionBaseName = "review-gate-v2-2.7.3.vsix"
-$ExtensionCandidates = @(
-    (Join-Path $ScriptDir $ExtensionBaseName),
-    (Join-Path $ScriptDir "cursor-extension\$ExtensionBaseName")
-)
-$ExtensionFile = $null
-foreach ($candidate in $ExtensionCandidates) {
-    if (Test-Path $candidate) {
-        $ExtensionFile = $candidate
-        break
-    }
+if (-not (Test-Path $ReleaseHelper)) {
+    Write-Error-Log "Release helper not found: $ReleaseHelper"
+    exit 1
 }
+
+$ExtensionBaseName = Get-ReleaseField "artifact_basename"
+$CanonicalVsixRepoPath = (Get-ReleaseField "canonical_vsix_path") -replace "/", [System.IO.Path]::DirectorySeparatorChar
+$RuleRepoPath = (Get-ReleaseField "rule_path") -replace "/", [System.IO.Path]::DirectorySeparatorChar
+$ExtensionFile = Join-Path $RepoRoot $CanonicalVsixRepoPath
 $InstalledExtensionFile = Join-Path $ReviewGateDir $ExtensionBaseName
-if ($ExtensionFile) {
+if (Test-Path $ExtensionFile) {
     Write-Progress-Log "Installing Cursor extension..."
     
     # Copy extension to installation directory
@@ -443,24 +451,23 @@ if ($ExtensionFile) {
         }
     }
 } else {
-    Write-Error-Log "Extension file not found. Checked: $(Join-Path $ScriptDir $ExtensionBaseName) and $(Join-Path $ScriptDir "cursor-extension\$ExtensionBaseName")"
-    Write-Info-Log "Please ensure one of the shipped VSIX files exists before running the installer again"
+    Write-Error-Log "Canonical extension file not found: $ExtensionFile"
+    Write-Info-Log "Package the canonical release artifact with: cd $ScriptDir\cursor-extension; npm run package"
     exit 1
 }
 
 # Install global rule (optional) - Windows-specific directory
 $CursorRulesDir = Join-Path $env:APPDATA "Cursor\User\rules"
-$RuleFileName = "ReviewGateV2.mdc"
-$RuleSourceFile = Join-Path $ScriptDir $RuleFileName
+$RuleFileName = Split-Path -Leaf $RuleRepoPath
+$RuleSourceFile = Join-Path $RepoRoot $RuleRepoPath
 $InstalledRuleFile = Join-Path $CursorRulesDir $RuleFileName
 if (Test-Path $RuleSourceFile) {
     Write-Progress-Log "Installing global rule..."
     New-Item -Path $CursorRulesDir -ItemType Directory -Force | Out-Null
     Copy-Item $RuleSourceFile $InstalledRuleFile -Force
     Write-Success-Log "Global rule installed to: $InstalledRuleFile"
-} elseif (Test-Path $RuleSourceFile) {
-    Write-Warning-Log "Could not determine Cursor rules directory"
-    Write-Info-Log "Global rule available at: $RuleSourceFile"
+} else {
+    Write-Warning-Log "Global rule file not found: $RuleSourceFile"
 }
 
 # Clean up any existing temp files

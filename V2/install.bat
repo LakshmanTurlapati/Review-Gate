@@ -43,6 +43,8 @@ if errorlevel 1 (
 REM Get script directory
 set "SCRIPT_DIR=%~dp0"
 set "SCRIPT_DIR=%SCRIPT_DIR:~0,-1%"
+for %%i in ("%SCRIPT_DIR%\..") do set "REPO_ROOT=%%~fi"
+set "RELEASE_HELPER=%REPO_ROOT%\scripts\package_review_gate_vsix.py"
 set "SMOKE_MODE=0"
 if /I "%REVIEW_GATE_SMOKE%"=="1" set "SMOKE_MODE=1"
 set "SKIP_DEP_INSTALL=0"
@@ -273,16 +275,20 @@ if "!SKIP_SERVER_SMOKE!"=="1" (
 )
 
 REM Install Cursor extension
-set "EXTENSION_VERSION=2.7.3"
-set "EXTENSION_BASENAME=review-gate-v2-2.7.3.vsix"
-set "EXTENSION_FILE="
-if exist "%SCRIPT_DIR%\!EXTENSION_BASENAME!" (
-    set "EXTENSION_FILE=%SCRIPT_DIR%\!EXTENSION_BASENAME!"
-) else if exist "%SCRIPT_DIR%\cursor-extension\!EXTENSION_BASENAME!" (
-    set "EXTENSION_FILE=%SCRIPT_DIR%\cursor-extension\!EXTENSION_BASENAME!"
+if not exist "!RELEASE_HELPER!" (
+    %log_error% Release helper not found: !RELEASE_HELPER!%NC%
+    if "!SHOULD_PAUSE!"=="1" pause
+    exit /b 1
 )
+
+for /f "usebackq delims=" %%i in (`!PYTHON_CMD! "!RELEASE_HELPER!" --field artifact_basename`) do set "EXTENSION_BASENAME=%%i"
+for /f "usebackq delims=" %%i in (`!PYTHON_CMD! "!RELEASE_HELPER!" --field canonical_vsix_path`) do set "CANONICAL_VSIX_REPO_PATH=%%i"
+for /f "usebackq delims=" %%i in (`!PYTHON_CMD! "!RELEASE_HELPER!" --field rule_path`) do set "RULE_REPO_PATH=%%i"
+set "CANONICAL_VSIX_REPO_PATH=!CANONICAL_VSIX_REPO_PATH:/=\!"
+set "RULE_REPO_PATH=!RULE_REPO_PATH:/=\!"
+set "EXTENSION_FILE=!REPO_ROOT!\!CANONICAL_VSIX_REPO_PATH!"
 set "INSTALLED_EXTENSION_FILE=!REVIEW_GATE_DIR!\!EXTENSION_BASENAME!"
-if defined EXTENSION_FILE (
+if exist "!EXTENSION_FILE!" (
     %log_progress% Installing Cursor extension...%NC%
     copy "!EXTENSION_FILE!" "!INSTALLED_EXTENSION_FILE!" >nul
     
@@ -338,25 +344,24 @@ if defined EXTENSION_FILE (
         )
     )
 ) else (
-    %log_error% Extension file not found. Checked: %SCRIPT_DIR%\!EXTENSION_BASENAME! and %SCRIPT_DIR%\cursor-extension\!EXTENSION_BASENAME!%NC%
-    %log_info% Please ensure one of the shipped VSIX files exists before running the installer again%NC%
+    %log_error% Canonical extension file not found: !EXTENSION_FILE!%NC%
+    %log_info% Package the canonical release artifact with: cd /d "%SCRIPT_DIR%\cursor-extension" && npm run package%NC%
     if "!SHOULD_PAUSE!"=="1" pause
     exit /b 1
 )
 
 REM Install global rule (optional) - Windows-specific directory
 set "CURSOR_RULES_DIR=%APPDATA%\Cursor\User\rules"
-set "RULE_FILENAME=ReviewGateV2.mdc"
-set "RULE_SOURCE_FILE=%SCRIPT_DIR%\!RULE_FILENAME!"
+for %%i in ("!RULE_REPO_PATH!") do set "RULE_FILENAME=%%~nxi"
+set "RULE_SOURCE_FILE=!REPO_ROOT!\!RULE_REPO_PATH!"
 set "INSTALLED_RULE_FILE=!CURSOR_RULES_DIR!\!RULE_FILENAME!"
 if exist "!RULE_SOURCE_FILE!" (
     %log_progress% Installing global rule...%NC%
     if not exist "!CURSOR_RULES_DIR!" mkdir "!CURSOR_RULES_DIR!"
     copy "!RULE_SOURCE_FILE!" "!INSTALLED_RULE_FILE!" >nul
     %log_success% Global rule installed to: !INSTALLED_RULE_FILE!%NC%
-) else if exist "!RULE_SOURCE_FILE!" (
-    %log_warning% Could not determine Cursor rules directory%NC%
-    %log_info% Global rule available at: !RULE_SOURCE_FILE!%NC%
+) else (
+    %log_warning% Global rule file not found: !RULE_SOURCE_FILE!%NC%
 )
 
 REM Clean up any existing temp files
