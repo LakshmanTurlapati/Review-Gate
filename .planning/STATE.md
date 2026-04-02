@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Phase 02 complete; Phase 03 ready to plan
-last_updated: "2026-04-02T20:16:44.727Z"
+stopped_at: Completed 03-01-PLAN.md
+last_updated: "2026-04-02T20:39:41.398Z"
 last_activity: 2026-04-02
 progress:
   total_phases: 5
   completed_phases: 2
-  total_plans: 6
-  completed_plans: 6
-  percent: 40
+  total_plans: 9
+  completed_plans: 7
+  percent: 78
 ---
 
 # Project State
@@ -26,19 +26,19 @@ See: .planning/PROJECT.md (updated 2026-04-02)
 ## Current Position
 
 Phase: 3 of 5 (Scoped IPC Security)
-Plan: Not started
-Status: Ready to plan
+Plan: 2 of 3 (03-02 next)
+Status: In progress
 Last activity: 2026-04-02
 
-Progress: [████░░░░░░] 40%
+Progress: [████████░░] 78%
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 6
-- Average duration: 4.0 min
-- Total execution time: 0.4 hours
+- Total plans completed: 7
+- Average duration: 4.1 min
+- Total execution time: 0.5 hours
 
 **By Phase:**
 
@@ -46,10 +46,11 @@ Progress: [████░░░░░░] 40%
 |-------|-------|-------|----------|
 | 01 | 4 | 10 min | 2.5 min |
 | 02 | 2 | 14 min | 7.0 min |
+| 03 | 1 | 5 min | 5.0 min |
 
 **Recent Trend:**
 
-- Last 5 plans: 01-02, 01-03, 01-04, 02-01, 02-02
+- Last 5 plans: 01-03, 01-04, 02-01, 02-02, 03-01
 - Trend: Active
 
 *Updated after each plan completion*
@@ -59,6 +60,7 @@ Progress: [████░░░░░░] 40%
 | Phase 01 P04 | 3min | 2 tasks | 2 files |
 | Phase 02 P01 | 7min | 3 tasks | 2 files |
 | Phase 02 P02 | 7min | 3 tasks | 2 files |
+| Phase 03 P01 | 5min | 3 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -76,6 +78,9 @@ Recent decisions affecting current work:
 - [Phase 02]: Moved trigger discovery to review_gate_trigger_<trigger_id>.json scanning so the extension processes one active MCP session at a time.
 - [Phase 02]: Overlapping MCP triggers now receive explicit busy acknowledgement and response envelopes instead of rebinding the active popup session.
 - [Phase 02]: Speech requests are accepted only when the trigger id matches the owning popup session and the audio filename carries the same trigger id.
+- [Phase 03]: Runtime-owned IPC now lives under review-gate-v2/<user>/sessions/<trigger_id>/ while preserving the Phase 2 filename contract.
+- [Phase 03]: Session teardown now removes whole session directories, with the server owning MCP-session cleanup and the extension owning manual-session and stale-directory cleanup.
+- [Phase 03]: Shared temp user-input audit logging was removed, while MCP liveness checks continue via a runtime-local review_gate_v2.log.
 
 ### Pending Todos
 
@@ -84,12 +89,12 @@ None yet.
 ### Blockers/Concerns
 
 - No automated regression harness exists yet for the Python server, Cursor extension, or installer matrix.
-- Phase 3 still needs to reduce trust exposure in temp-file IPC, shared logs, and popup asset loading.
+- Phase 3 still needs authenticated IPC envelope validation in `03-02-PLAN.md` and popup asset or DOM hardening in `03-03-PLAN.md`.
 - Phase 01 still has pending native macOS and Windows smoke tests captured in `01-HUMAN-UAT.md`.
 - Phase 02 still has pending live Cursor popup checks captured in `02-HUMAN-UAT.md`.
 
 ## Session Continuity
 
-Last session: 2026-04-02T20:16:44.727Z
-Stopped at: Phase 02 complete with deferred live Cursor validation; Phase 03 ready to plan
+Last session: 2026-04-02T20:39:41.395Z
+Stopped at: Completed 03-01-PLAN.md
 Resume file: None

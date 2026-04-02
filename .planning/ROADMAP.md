@@ -54,7 +54,7 @@ Plans:
   3. The popup interface loads required assets locally and avoids unsafe HTML injection patterns.
 **Plans**: 3 plans
 Plans:
-- [ ] 03-01-PLAN.md - Move active IPC, attachment, and speech artifacts into Review Gate-owned per-session runtime directories with whole-session cleanup.
+- [x] 03-01-PLAN.md - Move active IPC, attachment, and speech artifacts into Review Gate-owned per-session runtime directories with whole-session cleanup.
 - [ ] 03-02-PLAN.md - Require authenticated envelope validation, atomic JSON writes, and redacted status or log surfaces for the active IPC path.
 - [ ] 03-03-PLAN.md - Harden the popup webview with local assets, strict CSP, and DOM-safe rendering paths.
 **UI hint**: yes
@@ -88,6 +88,6 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5
 |-------|----------------|--------|-----------|
 | 1. Installation Integrity | 4/4 | Complete | 2026-04-02 |
 | 2. Session Routing Reliability | 2/2 | Complete | 2026-04-02 |
-| 3. Scoped IPC Security | 0/3 | Not started | - |
+| 3. Scoped IPC Security | 1/3 | In Progress | - |
 | 4. Automated Hardening Verification | 0/TBD | Not started | - |
 | 5. Canonical Release Surface | 0/TBD | Not started | - |
