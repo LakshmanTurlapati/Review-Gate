@@ -23,10 +23,10 @@ Keep the human and agent in the same working loop until the human says the task 
 - ✓ Overlapping or abandoned popup sessions now return explicit busy, cancelled, or timeout outcomes instead of silently rebinding the active exchange. - validated in Phase 2
 - ✓ Active IPC, speech, and audio artifacts now live under Review Gate-owned per-session runtime directories with whole-session cleanup. - validated in Phase 3
 - ✓ Initial trigger intake now requires runtime-secret proof, authenticated follow-up envelopes, and popup rendering without external assets or unsafe HTML assembly. - validated in Phase 3
+- ✓ Maintainers can now run automated Python server, Node extension, and installer/config regression suites from the repo root before release. - validated in Phase 4
 
 ### Active
 
-- [ ] Add automated verification for the Python server, Cursor extension flow, and installer smoke paths.
 - [ ] Reduce release drift by making docs, artifacts, and supported runtime surface match the actual shipped behavior.
 - [ ] Complete native macOS and Windows install smoke validation for the corrected Phase 1 installer flows.
 - [ ] Complete live Cursor popup validation for the new Phase 2 busy/cancel/timeout routing behavior.
@@ -63,6 +63,7 @@ Keep the human and agent in the same working loop until the human says the task 
 | Standardize installers on `ReviewGateV2.mdc`, `review-gate-v2-2.7.3.vsix`, and targeted MCP config mutation | Phase 1 needed one consistent supported runtime surface before session hardening work could safely build on it | ✓ Good |
 | Standardize active popup routing on trigger-scoped temp files with explicit busy and cancel outcomes | Phase 2 needed deterministic session ownership before security hardening or test automation could be trusted | ✓ Good |
 | Harden local IPC in layers: scoped runtime directories first, authenticated envelopes second, popup CSP and DOM safety third, then a final proof gate for initial triggers | Phase 3 needed to close both storage exposure and trust-boundary gaps without replacing the transport or redesigning the extension | ✓ Good |
+| Keep verification low-friction with stdlib Python, built-in Node test tooling, and smoke-mode installers instead of adopting heavyweight test infrastructure first | Phase 4 needed repeatable coverage that matches the current repo and can run immediately on developer machines | ✓ Good |
 
 ## Evolution
 
@@ -82,4 +83,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-04-02 after Phase 3*
+*Last updated: 2026-04-02 after Phase 4*
