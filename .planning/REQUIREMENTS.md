@@ -14,8 +14,8 @@
 
 ### Session Reliability
 
-- [ ] **SESS-01**: User can complete a Review Gate popup round-trip without another in-flight session overwriting the active trigger or response state.
-- [ ] **SESS-02**: User receives responses only for the active Review Gate session, without generic fallback files leaking stale or unrelated input.
+- [x] **SESS-01**: User can complete a Review Gate popup round-trip without another in-flight session overwriting the active trigger or response state.
+- [x] **SESS-02**: User receives responses only for the active Review Gate session, without generic fallback files leaking stale or unrelated input.
 - [ ] **SESS-03**: User gets clear recovery behavior for timed-out or failed popup interactions instead of silent stalls.
 
 ### Privacy and Security
@@ -55,8 +55,8 @@
 | INST-02 | Phase 1 | Pending |
 | INST-03 | Phase 1 | Complete |
 | INST-04 | Phase 1 | Complete |
-| SESS-01 | Phase 2 | Pending |
-| SESS-02 | Phase 2 | Pending |
+| SESS-01 | Phase 2 | Complete |
+| SESS-02 | Phase 2 | Complete |
 | SESS-03 | Phase 2 | Pending |
 | SEC-01 | Phase 3 | Pending |
 | SEC-02 | Phase 3 | Pending |
