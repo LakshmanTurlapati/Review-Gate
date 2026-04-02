@@ -65,9 +65,16 @@ function getSessionsRoot() {
     return ensureDirectory(path.join(getRuntimeRoot(), 'sessions'));
 }
 
+function getSessionId(triggerId) {
+    return sanitizeRuntimeComponent(triggerId, 'session');
+}
+
+function getSessionPath(triggerId) {
+    return path.join(getSessionsRoot(), getSessionId(triggerId));
+}
+
 function getSessionDir(triggerId) {
-    const sessionId = sanitizeRuntimeComponent(triggerId, 'session');
-    return ensureDirectory(path.join(getSessionsRoot(), sessionId));
+    return ensureDirectory(getSessionPath(triggerId));
 }
 
 const SESSION_FILE_NAMES = {
@@ -79,22 +86,29 @@ const SESSION_FILE_NAMES = {
 };
 const SESSION_STALE_MAX_AGE_MS = 10 * 60 * 1000;
 const STALE_CLEANUP_INTERVAL_MS = 30 * 1000;
-const STALE_FILE_PATTERNS = [
-    /^review_gate_trigger_.+\.json$/,
-    /^review_gate_ack_.+\.json$/,
-    /^review_gate_response_.+\.json$/,
-    /^review_gate_speech_trigger_.+\.json$/,
-    /^review_gate_speech_response_.+\.json$/,
-    /^review_gate_audio_.+\.wav$/
-];
+
+function getSessionFileName(kind, triggerId) {
+    const sessionId = getSessionId(triggerId);
+    return SESSION_FILE_NAMES[kind].replace('{triggerId}', sessionId);
+}
 
 function getSessionFilePath(kind, triggerId) {
-    const sessionId = sanitizeRuntimeComponent(triggerId, 'session');
-    return path.join(getSessionDir(sessionId), SESSION_FILE_NAMES[kind].replace('{triggerId}', sessionId));
+    const sessionId = getSessionId(triggerId);
+    return path.join(getSessionDir(sessionId), getSessionFileName(kind, sessionId));
+}
+
+function getExistingSessionFilePath(kind, triggerId) {
+    const sessionId = getSessionId(triggerId);
+    return path.join(getSessionPath(sessionId), getSessionFileName(kind, sessionId));
 }
 
 function getMcpLogPath() {
     return path.join(getRuntimeRoot(), 'review_gate_v2.log');
+}
+
+function getSessionAudioPath(triggerId, timestamp = Date.now()) {
+    const sessionId = getSessionId(triggerId);
+    return path.join(getSessionDir(sessionId), `review_gate_audio_${sessionId}_${timestamp}.wav`);
 }
 
 function listPendingTriggerFiles() {
@@ -198,6 +212,48 @@ function clearActiveMcpSession(triggerId = null) {
     setPopupContext();
 }
 
+function cleanupSessionDirectory(triggerId, reason = 'session cleanup') {
+    if (!triggerId) {
+        return false;
+    }
+
+    const sessionPath = getSessionPath(triggerId);
+    if (!fs.existsSync(sessionPath)) {
+        return false;
+    }
+
+    try {
+        fs.rmSync(sessionPath, { recursive: true, force: true });
+        logMessage(`${reason}: removed session directory ${sessionPath}`);
+        return true;
+    } catch (error) {
+        logMessage(`Failed to remove session directory ${sessionPath}: ${error.message}`);
+        return false;
+    }
+}
+
+function getSessionLastActivity(sessionPath) {
+    let latestMtime = 0;
+
+    try {
+        const sessionStats = fs.statSync(sessionPath);
+        latestMtime = sessionStats.mtimeMs;
+    } catch (error) {
+        return latestMtime;
+    }
+
+    for (const entryName of fs.readdirSync(sessionPath)) {
+        const entryPath = path.join(sessionPath, entryName);
+        try {
+            latestMtime = Math.max(latestMtime, fs.statSync(entryPath).mtimeMs);
+        } catch (error) {
+            // Ignore files that disappeared during the sweep.
+        }
+    }
+
+    return latestMtime;
+}
+
 function removeSessionFile(filePath, reason = 'session file cleanup') {
     try {
         if (fs.existsSync(filePath)) {
@@ -253,17 +309,18 @@ function removeSessionAudioFiles(triggerId, reason = 'session audio cleanup') {
         return 0;
     }
 
-    const tempDir = getTempPath('');
-    const audioPattern = new RegExp(`^review_gate_audio_${escapeRegExp(triggerId)}_.+\\.wav$`);
+    const sessionId = getSessionId(triggerId);
+    const sessionDir = getSessionPath(sessionId);
+    const audioPattern = new RegExp(`^review_gate_audio_${escapeRegExp(sessionId)}_.+\\.wav$`);
     let removedCount = 0;
 
     try {
-        for (const fileName of fs.readdirSync(tempDir)) {
+        for (const fileName of fs.readdirSync(sessionDir)) {
             if (!audioPattern.test(fileName)) {
                 continue;
             }
 
-            const filePath = path.join(tempDir, fileName);
+            const filePath = path.join(sessionDir, fileName);
             try {
                 fs.unlinkSync(filePath);
                 removedCount += 1;
@@ -288,8 +345,8 @@ function cleanupSessionSpeechArtifacts(triggerId, reason = 'session speech clean
         return 0;
     }
 
-    removeSessionFile(getSessionFilePath('speechTrigger', triggerId), `${reason}: removed speech trigger`);
-    removeSessionFile(getSessionFilePath('speechResponse', triggerId), `${reason}: removed speech response`);
+    removeSessionFile(getExistingSessionFilePath('speechTrigger', triggerId), `${reason}: removed speech trigger`);
+    removeSessionFile(getExistingSessionFilePath('speechResponse', triggerId), `${reason}: removed speech response`);
 
     if (options.removeAudioFiles) {
         return removeSessionAudioFiles(triggerId, `${reason}: removed audio file`);
@@ -342,36 +399,51 @@ function cancelActiveRecording(reason, triggerId = null) {
 }
 
 function cleanupStaleSessionFiles(maxAgeMs = SESSION_STALE_MAX_AGE_MS) {
-    const tempDir = getTempPath('');
     const now = Date.now();
     let removedCount = 0;
+    const activeSessionIds = new Set();
+
+    if (activeMcpSession && activeMcpSession.triggerId) {
+        activeSessionIds.add(getSessionId(activeMcpSession.triggerId));
+    }
+    if (currentPopupContext.triggerId && chatPanel) {
+        activeSessionIds.add(getSessionId(currentPopupContext.triggerId));
+    }
+    if (currentRecording && currentRecording.triggerId) {
+        activeSessionIds.add(getSessionId(currentRecording.triggerId));
+    }
 
     try {
-        for (const fileName of fs.readdirSync(tempDir)) {
-            if (!STALE_FILE_PATTERNS.some(pattern => pattern.test(fileName))) {
+        for (const sessionEntry of fs.readdirSync(getSessionsRoot(), { withFileTypes: true })) {
+            if (!sessionEntry.isDirectory()) {
                 continue;
             }
 
-            const filePath = path.join(tempDir, fileName);
+            const sessionId = sessionEntry.name;
+            if (activeSessionIds.has(sessionId)) {
+                continue;
+            }
+
+            const sessionPath = path.join(getSessionsRoot(), sessionId);
 
             try {
-                const stats = fs.statSync(filePath);
-                if (!stats.isFile() || now - stats.mtimeMs <= maxAgeMs) {
+                const latestMtime = getSessionLastActivity(sessionPath);
+                if (!latestMtime || now - latestMtime <= maxAgeMs) {
                     continue;
                 }
 
-                fs.unlinkSync(filePath);
-                removedCount += 1;
-                logMessage(`Removed stale session file: ${filePath}`);
+                if (cleanupSessionDirectory(sessionId, 'Removed stale session cleanup')) {
+                    removedCount += 1;
+                }
             } catch (error) {
                 if (error.code !== 'ENOENT') {
-                    logMessage(`Failed stale cleanup for ${filePath}: ${error.message}`);
+                    logMessage(`Failed stale cleanup for ${sessionPath}: ${error.message}`);
                 }
             }
         }
     } catch (error) {
         if (error.code !== 'ENOENT') {
-            logMessage(`Failed to scan temp directory for stale session files: ${error.message}`);
+            logMessage(`Failed to scan session runtime directory for stale cleanup: ${error.message}`);
         }
     }
 
@@ -522,15 +594,6 @@ function logUserInput(inputText, eventType = 'MESSAGE', triggerId = null, attach
     
     if (outputChannel) {
         outputChannel.appendLine(logMsg);
-    }
-    
-    // Write to file for external monitoring
-    try {
-        const logFile = getTempPath('review_gate_user_inputs.log');
-        fs.appendFileSync(logFile, `${logMsg}\n`);
-        
-    } catch (error) {
-        logMessage(`Could not write to Review Gate log file: ${error.message}`);
     }
 }
 
@@ -940,6 +1003,9 @@ function openReviewGatePopup(context, options = {}) {
                         cleanupSessionSpeechArtifacts(currentTriggerId, 'Submitted session cleanup', {
                             removeAudioFiles: true
                         });
+                        if (!currentMcpIntegration) {
+                            cleanupSessionDirectory(currentTriggerId, 'Submitted manual session cleanup');
+                        }
                     }
 
                     if (currentMcpIntegration && currentTriggerId && responseWritten) {
@@ -1010,6 +1076,9 @@ function openReviewGatePopup(context, options = {}) {
                 cleanupSessionSpeechArtifacts(closingTriggerId, 'Disposed session cleanup', {
                     removeAudioFiles: true
                 });
+                if (!closingSession) {
+                    cleanupSessionDirectory(closingTriggerId, 'Disposed manual session cleanup');
+                }
             }
 
             activeMcpSession = null;
@@ -2335,7 +2404,7 @@ async function handleSpeechToText(audioData, triggerId, isFilePath = false) {
         } else {
             const base64Data = audioData.split(',')[1];
             const audioBuffer = Buffer.from(base64Data, 'base64');
-            tempAudioPath = getTempPath(`review_gate_audio_${sessionTriggerId}_${Date.now()}.wav`);
+            tempAudioPath = getSessionAudioPath(sessionTriggerId, Date.now());
             fs.writeFileSync(tempAudioPath, audioBuffer);
             console.log(`Audio saved for transcription: ${tempAudioPath}`);
         }
@@ -2452,7 +2521,7 @@ async function validateSoxSetup() {
                 console.log(`✅ SoX found: ${soxVersion.trim()}`);
                 
                 // Test microphone access with a very short recording
-                const testFile = getTempPath(`review_gate_test_${Date.now()}.wav`);
+                const testFile = path.join(getRuntimeRoot(), `review_gate_test_${Date.now()}.wav`);
                 const micTestProcess = spawn('sox', ['-d', '-r', '16000', '-c', '1', testFile, 'trim', '0', '0.1'], { stdio: 'pipe' });
                 
                 let testError = '';
@@ -2569,7 +2638,7 @@ async function startNodeRecording(triggerId) {
         console.log('✅ SoX validation successful - proceeding with recording');
         
         const timestamp = Date.now();
-        const audioFile = getTempPath(`review_gate_audio_${sessionTriggerId}_${timestamp}.wav`);
+        const audioFile = getSessionAudioPath(sessionTriggerId, timestamp);
         
         console.log(`🎤 Starting SoX recording: ${audioFile}`);
         
