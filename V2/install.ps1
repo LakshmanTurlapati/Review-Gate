@@ -303,12 +303,25 @@ try {
 }
 
 # Install Cursor extension
-$ExtensionFile = Join-Path $ScriptDir "cursor-extension\review-gate-v2-2.7.3.vsix"
-if (Test-Path $ExtensionFile) {
+$ExtensionVersion = "2.7.3"
+$ExtensionBaseName = "review-gate-v2-2.7.3.vsix"
+$ExtensionCandidates = @(
+    (Join-Path $ScriptDir $ExtensionBaseName),
+    (Join-Path $ScriptDir "cursor-extension\$ExtensionBaseName")
+)
+$ExtensionFile = $null
+foreach ($candidate in $ExtensionCandidates) {
+    if (Test-Path $candidate) {
+        $ExtensionFile = $candidate
+        break
+    }
+}
+$InstalledExtensionFile = Join-Path $ReviewGateDir $ExtensionBaseName
+if ($ExtensionFile) {
     Write-Progress-Log "Installing Cursor extension..."
     
     # Copy extension to installation directory
-    Copy-Item $ExtensionFile $ReviewGateDir -Force
+    Copy-Item $ExtensionFile $InstalledExtensionFile -Force
     
     # Try automated installation first
     $ExtensionInstalled = $false
@@ -322,7 +335,7 @@ if (Test-Path $ExtensionFile) {
         if (Test-Path $cursorCmd) {
             Write-Progress-Log "Attempting automated extension installation..."
             try {
-                & $cursorCmd --install-extension $ExtensionFile | Out-Null
+                & $cursorCmd --install-extension $InstalledExtensionFile | Out-Null
                 Write-Success-Log "Extension installed automatically via command line"
                 $ExtensionInstalled = $true
                 break
@@ -339,7 +352,7 @@ if (Test-Path $ExtensionFile) {
         Write-Step-Log "1. Open Cursor IDE"
         Write-Step-Log "2. Press Ctrl+Shift+P"
         Write-Step-Log "3. Type 'Extensions: Install from VSIX'"
-        Write-Step-Log "4. Select: $ReviewGateDir\review-gate-v2-2.7.3.vsix"
+        Write-Step-Log "4. Select: $InstalledExtensionFile"
         Write-Step-Log "5. Restart Cursor when prompted"
         Write-Host ""
         
@@ -365,9 +378,9 @@ if (Test-Path $ExtensionFile) {
         }
     }
 } else {
-    Write-Error-Log "Extension file not found: $ExtensionFile"
-    Write-Info-Log "Please ensure the extension is built in cursor-extension\ directory"
-    Write-Info-Log "Or install manually from the Cursor Extensions marketplace"
+    Write-Error-Log "Extension file not found. Checked: $(Join-Path $ScriptDir $ExtensionBaseName) and $(Join-Path $ScriptDir "cursor-extension\$ExtensionBaseName")"
+    Write-Info-Log "Please ensure one of the shipped VSIX files exists before running the installer again"
+    exit 1
 }
 
 # Install global rule (optional) - Windows-specific directory
@@ -396,7 +409,7 @@ Write-Host ""
 Write-Header-Log "Installation Summary:"
 Write-Step-Log "   • MCP Server: $ReviewGateDir"
 Write-Step-Log "   • MCP Config: $CursorMcpFile"
-Write-Step-Log "   • Extension: $ReviewGateDir\review-gate-v2-2.7.3.vsix"
+Write-Step-Log "   • Extension: $InstalledExtensionFile"
 Write-Step-Log "   • Global Rule: $CursorRulesDir\ReviewGate.mdc"
 Write-Host ""
 Write-Header-Log "Testing Your Installation:"

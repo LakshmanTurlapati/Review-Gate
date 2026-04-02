@@ -310,18 +310,31 @@ fi
 rm -f "$MCP_TEST_LOG"
 
 # Install Cursor extension
-EXTENSION_FILE="$SCRIPT_DIR/cursor-extension/review-gate-v2-2.7.3.vsix"
-if [[ -f "$EXTENSION_FILE" ]]; then
+EXTENSION_VERSION="2.7.3"
+EXTENSION_BASENAME="review-gate-v2-2.7.3.vsix"
+EXTENSION_FILE=""
+for extension_candidate in \
+    "$SCRIPT_DIR/$EXTENSION_BASENAME" \
+    "$SCRIPT_DIR/cursor-extension/$EXTENSION_BASENAME"
+do
+    if [[ -f "$extension_candidate" ]]; then
+        EXTENSION_FILE="$extension_candidate"
+        break
+    fi
+done
+INSTALLED_EXTENSION_FILE="$REVIEW_GATE_DIR/$EXTENSION_BASENAME"
+
+if [[ -n "$EXTENSION_FILE" ]]; then
     log_progress "Installing Cursor extension..."
     
     # Copy extension to installation directory
-    cp "$EXTENSION_FILE" "$REVIEW_GATE_DIR/"
+    cp "$EXTENSION_FILE" "$INSTALLED_EXTENSION_FILE"
     
     # Try automated installation first
     EXTENSION_INSTALLED=false
     if command -v cursor &> /dev/null; then
         log_progress "Attempting automated extension installation..."
-        if cursor --install-extension "$EXTENSION_FILE" >/dev/null 2>&1; then
+        if cursor --install-extension "$INSTALLED_EXTENSION_FILE" >/dev/null 2>&1; then
             log_success "Extension installed automatically via command line"
             EXTENSION_INSTALLED=true
         else
@@ -336,7 +349,7 @@ if [[ -f "$EXTENSION_FILE" ]]; then
         log_step "1. Open Cursor IDE"
         log_step "2. Press Cmd+Shift+P (or Ctrl+Shift+P on Linux)"
         log_step "3. Type 'Extensions: Install from VSIX'"
-        log_step "4. Select: $REVIEW_GATE_DIR/review-gate-v2-2.7.3.vsix"
+        log_step "4. Select: $INSTALLED_EXTENSION_FILE"
         log_step "5. Restart Cursor when prompted"
         echo ""
         
@@ -352,9 +365,9 @@ if [[ -f "$EXTENSION_FILE" ]]; then
         fi
     fi
 else
-    log_error "Extension file not found: $EXTENSION_FILE"
-    log_info "Please ensure the extension is built in cursor-extension/ directory"
-    log_info "Or install manually from the Cursor Extensions marketplace"
+    log_error "Extension file not found. Checked: $SCRIPT_DIR/$EXTENSION_BASENAME and $SCRIPT_DIR/cursor-extension/$EXTENSION_BASENAME"
+    log_info "Please ensure one of the shipped VSIX files exists before running the installer again"
+    exit 1
 fi
 
 # Install global rule (optional) - Cross-platform directory detection
@@ -386,7 +399,7 @@ echo ""
 echo -e "${BLUE}Installation Summary:${NC}"
 log_step "   - MCP Server: $REVIEW_GATE_DIR"
 log_step "   - MCP Config: $CURSOR_MCP_FILE"
-log_step "   - Extension: $REVIEW_GATE_DIR/review-gate-v2-2.7.3.vsix"
+log_step "   - Extension: $INSTALLED_EXTENSION_FILE"
 log_step "   - Global Rule: $CURSOR_RULES_DIR/ReviewGate.mdc"
 echo ""
 echo -e "${BLUE}Testing Your Installation:${NC}"

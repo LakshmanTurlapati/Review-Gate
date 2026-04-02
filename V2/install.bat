@@ -215,10 +215,18 @@ timeout /t 1 /nobreak >nul 2>&1
 %log_warning% MCP server test skipped (manual verification required)%NC%
 
 REM Install Cursor extension
-set "EXTENSION_FILE=%SCRIPT_DIR%\cursor-extension\review-gate-v2-2.7.3.vsix"
-if exist "!EXTENSION_FILE!" (
+set "EXTENSION_VERSION=2.7.3"
+set "EXTENSION_BASENAME=review-gate-v2-2.7.3.vsix"
+set "EXTENSION_FILE="
+if exist "%SCRIPT_DIR%\!EXTENSION_BASENAME!" (
+    set "EXTENSION_FILE=%SCRIPT_DIR%\!EXTENSION_BASENAME!"
+) else if exist "%SCRIPT_DIR%\cursor-extension\!EXTENSION_BASENAME!" (
+    set "EXTENSION_FILE=%SCRIPT_DIR%\cursor-extension\!EXTENSION_BASENAME!"
+)
+set "INSTALLED_EXTENSION_FILE=!REVIEW_GATE_DIR!\!EXTENSION_BASENAME!"
+if defined EXTENSION_FILE (
     %log_progress% Installing Cursor extension...%NC%
-    copy "!EXTENSION_FILE!" "!REVIEW_GATE_DIR!\" >nul
+    copy "!EXTENSION_FILE!" "!INSTALLED_EXTENSION_FILE!" >nul
     
     REM Try automated installation first
     set "EXTENSION_INSTALLED=false"
@@ -235,7 +243,7 @@ if exist "!EXTENSION_FILE!" (
     
     if defined CURSOR_CMD (
         %log_progress% Attempting automated extension installation...%NC%
-        "!CURSOR_CMD!" --install-extension "!EXTENSION_FILE!" >nul 2>&1
+        "!CURSOR_CMD!" --install-extension "!INSTALLED_EXTENSION_FILE!" >nul 2>&1
         if !errorlevel! equ 0 (
             %log_success% Extension installed automatically via command line%NC%
             set "EXTENSION_INSTALLED=true"
@@ -252,7 +260,7 @@ if exist "!EXTENSION_FILE!" (
         %log_step% 1. Open Cursor IDE%NC%
         %log_step% 2. Press Ctrl+Shift+P%NC%
         %log_step% 3. Type 'Extensions: Install from VSIX'%NC%
-        %log_step% 4. Select: !REVIEW_GATE_DIR!\review-gate-v2-2.7.3.vsix%NC%
+        %log_step% 4. Select: !INSTALLED_EXTENSION_FILE!%NC%
         %log_step% 5. Restart Cursor when prompted%NC%
         echo.
         
@@ -268,9 +276,10 @@ if exist "!EXTENSION_FILE!" (
         )
     )
 ) else (
-    %log_error% Extension file not found: !EXTENSION_FILE!%NC%
-    %log_info% Please ensure the extension is built in cursor-extension\ directory%NC%
-    %log_info% Or install manually from the Cursor Extensions marketplace%NC%
+    %log_error% Extension file not found. Checked: %SCRIPT_DIR%\!EXTENSION_BASENAME! and %SCRIPT_DIR%\cursor-extension\!EXTENSION_BASENAME!%NC%
+    %log_info% Please ensure one of the shipped VSIX files exists before running the installer again%NC%
+    pause
+    exit /b 1
 )
 
 REM Install global rule (optional) - Windows-specific directory
@@ -298,7 +307,7 @@ echo.
 %log_header% Installation Summary:%NC%
 %log_step%    - MCP Server: !REVIEW_GATE_DIR!%NC%
 %log_step%    - MCP Config: !CURSOR_MCP_FILE!%NC%
-%log_step%    - Extension: !REVIEW_GATE_DIR!\review-gate-v2-2.7.3.vsix%NC%
+%log_step%    - Extension: !INSTALLED_EXTENSION_FILE!%NC%
 %log_step%    - Global Rule: !CURSOR_RULES_DIR!\ReviewGate.mdc%NC%
 echo.
 %log_header% Testing Your Installation:%NC%
