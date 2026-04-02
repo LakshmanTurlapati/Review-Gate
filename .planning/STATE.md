@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-status: executing
-stopped_at: Completed 04-02-PLAN.md
-last_updated: "2026-04-02T21:48:53.418Z"
+status: verifying
+stopped_at: Completed 04-03-PLAN.md
+last_updated: "2026-04-02T22:02:22.745Z"
 last_activity: 2026-04-02
 progress:
   total_phases: 5
-  completed_phases: 3
+  completed_phases: 4
   total_plans: 13
-  completed_plans: 12
+  completed_plans: 13
   percent: 92
 ---
 
@@ -27,7 +27,7 @@ See: .planning/PROJECT.md (updated 2026-04-02)
 
 Phase: 4 of 5 (automated hardening verification)
 Plan: 3 of 3
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Last activity: 2026-04-02
 
 Progress: [█████████░] 92%
@@ -67,6 +67,7 @@ Progress: [█████████░] 92%
 | Phase 03 P04 | 10 min | 2 tasks | 2 files |
 | Phase 04 P01 | 3min | 2 tasks | 2 files |
 | Phase 04 P02 | 10min | 2 tasks | 3 files |
+| Phase 04 P03 | 4min | 3 tasks | 6 files |
 
 ## Accumulated Context
 
@@ -101,6 +102,9 @@ Recent decisions affecting current work:
 - [Phase 04]: Kept the extension monolithic and exposed only a narrow __testHooks seam for resettable Node regression tests.
 - [Phase 04]: Ran extension regressions through real temp-session files under a stubbed vscode host instead of Cursor UI automation or third-party JS test frameworks.
 - [Phase 04]: Resolved runtime path validation against realpaths so hardened temp-root checks still accept legitimate macOS /tmp session files.
+- [Phase 04]: Used one explicit REVIEW_GATE_SMOKE contract across all installers so smoke runs redirect temp roots and skip real workstation side effects.
+- [Phase 04]: Kept installer verification in stdlib unittest plus subprocess so the phase reused the shipped shell entrypoints directly.
+- [Phase 04]: Made the repo-root runner call the established 04-01, 04-02, and 04-03 suites instead of creating a separate verification path.
 
 ### Pending Todos
 
@@ -115,6 +119,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-02T21:48:53.409Z
-Stopped at: Completed 04-02-PLAN.md
+Last session: 2026-04-02T22:02:22.742Z
+Stopped at: Completed 04-03-PLAN.md
 Resume file: None

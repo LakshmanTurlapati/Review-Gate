@@ -72,7 +72,7 @@ Plans:
 Plans:
 - [x] 04-01-PLAN.md - Add a stdlib Python regression harness for Review Gate server trigger, acknowledgement, response, and timeout behavior.
 - [x] 04-02-PLAN.md - Add a built-in Node regression harness for extension trigger intake, popup lifecycle, session routing, and attachment handling.
-- [ ] 04-03-PLAN.md - Add installer smoke mode, config-helper fixture coverage, and one repo-root release-check command for the full Phase 4 suite.
+- [x] 04-03-PLAN.md - Add installer smoke mode, config-helper fixture coverage, and one repo-root release-check command for the full Phase 4 suite.
 
 ### Phase 5: Canonical Release Surface
 **Goal**: Maintainers can ship one authoritative Review Gate release whose docs and artifacts match the actual supported runtime.
