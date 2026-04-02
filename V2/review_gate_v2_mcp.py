@@ -123,6 +123,7 @@ SESSION_FILE_NAMES = {
     "speech_trigger": "review_gate_speech_trigger_{trigger_id}.json",
     "speech_response": "review_gate_speech_response_{trigger_id}.json",
 }
+IPC_PROTOCOL_VERSION = "review-gate-v2-session-v1"
 
 
 def _session_file(kind: str, trigger_id: str) -> Path:
@@ -194,6 +195,7 @@ class ReviewGateServer:
         self._last_attachments = []
         self._last_session_outcome = {"status": "idle", "message": ""}
         self._last_acknowledgement_outcome = {"status": "idle", "message": ""}
+        self._session_contracts: Dict[str, Dict[str, str]] = {}
         self._whisper_model = None
         
         # Initialize Whisper model with comprehensive error handling
@@ -277,6 +279,107 @@ class ReviewGateServer:
         """Reset attachment state for any non-response outcome."""
         self._last_attachments = []
 
+    def _contract_key(self, trigger_id: str) -> str:
+        return _session_token(trigger_id)
+
+    def _create_session_contract(self, trigger_id: str) -> Dict[str, str]:
+        contract = {
+            "trigger_id": trigger_id,
+            "protocol_version": IPC_PROTOCOL_VERSION,
+            "session_token": uuid.uuid4().hex,
+        }
+        self._session_contracts[self._contract_key(trigger_id)] = contract
+        return contract
+
+    def _get_session_contract(self, trigger_id: str) -> Optional[Dict[str, str]]:
+        return self._session_contracts.get(self._contract_key(trigger_id))
+
+    def _clear_session_contract(self, trigger_id: str) -> None:
+        self._session_contracts.pop(self._contract_key(trigger_id), None)
+
+    def _session_envelope_fields(self, trigger_id: str) -> Dict[str, str]:
+        contract = self._get_session_contract(trigger_id)
+        if not contract:
+            raise ValueError(f"No active session contract found for trigger {trigger_id}")
+        return {
+            "trigger_id": contract["trigger_id"],
+            "protocol_version": contract["protocol_version"],
+            "session_token": contract["session_token"],
+        }
+
+    def _validate_session_envelope(
+        self,
+        envelope: Any,
+        *,
+        expected_trigger_id: Optional[str] = None,
+        expected_source: Optional[str] = None,
+        required_data_keys: Optional[Sequence[str]] = None,
+    ) -> Dict[str, Any]:
+        if not isinstance(envelope, dict):
+            raise ValueError("Session envelope must be a JSON object")
+
+        protocol_version = str(envelope.get("protocol_version") or "").strip()
+        if protocol_version != IPC_PROTOCOL_VERSION:
+            raise ValueError(f"Unsupported protocol version: {protocol_version or 'missing'}")
+
+        envelope_trigger_id = str(
+            envelope.get("trigger_id")
+            or (envelope.get("data", {}) or {}).get("trigger_id")
+            or ""
+        ).strip()
+        if not envelope_trigger_id:
+            raise ValueError("Session envelope is missing trigger_id")
+
+        if expected_trigger_id and envelope_trigger_id != expected_trigger_id:
+            raise ValueError(
+                f"Unexpected trigger_id in session envelope: {envelope_trigger_id}"
+            )
+
+        session_token = str(envelope.get("session_token") or "").strip()
+        if not session_token:
+            raise ValueError("Session envelope is missing session_token")
+
+        contract = self._get_session_contract(envelope_trigger_id)
+        if not contract:
+            raise ValueError(f"No active session contract for trigger {envelope_trigger_id}")
+
+        if session_token != contract["session_token"]:
+            raise ValueError(f"Session token mismatch for trigger {envelope_trigger_id}")
+
+        if expected_source:
+            source = str(envelope.get("source") or "").strip()
+            if source != expected_source:
+                raise ValueError(
+                    f"Unexpected session envelope source for {envelope_trigger_id}: {source or 'missing'}"
+                )
+
+        data = envelope.get("data")
+        if required_data_keys:
+            if not isinstance(data, dict):
+                raise ValueError("Session envelope data payload must be an object")
+            for required_key in required_data_keys:
+                if data.get(required_key) in (None, ""):
+                    raise ValueError(
+                        f"Session envelope data is missing required field '{required_key}'"
+                    )
+
+        if isinstance(data, dict):
+            nested_trigger_id = str(data.get("trigger_id") or envelope_trigger_id).strip()
+            if nested_trigger_id != envelope_trigger_id:
+                raise ValueError("Nested trigger_id does not match the session envelope")
+
+            nested_protocol_version = str(
+                data.get("protocol_version") or protocol_version
+            ).strip()
+            if nested_protocol_version != protocol_version:
+                raise ValueError("Nested protocol_version does not match the session envelope")
+
+            nested_session_token = str(data.get("session_token") or session_token).strip()
+            if nested_session_token != session_token:
+                raise ValueError("Nested session_token does not match the session envelope")
+
+        return envelope
+
     def _set_session_outcome(self, status: str, message: str = "", **extra: Any) -> Dict[str, Any]:
         outcome = {"status": status, "message": message, **extra}
         self._last_session_outcome = outcome
@@ -299,15 +402,19 @@ class ReviewGateServer:
                 continue
         return latest_mtime
 
-    def _cleanup_session_directory(self, trigger_id: str) -> bool:
+    def _cleanup_session_directory(self, trigger_id: str, clear_contract: bool = True) -> bool:
         """Remove an entire session directory and every IPC artifact it owns."""
         session_path = _session_path(trigger_id)
         if not session_path.exists():
+            if clear_contract:
+                self._clear_session_contract(trigger_id)
             return False
 
         try:
             shutil.rmtree(session_path)
             logger.info(f"🧹 Removed session directory for trigger {trigger_id}: {session_path}")
+            if clear_contract:
+                self._clear_session_contract(trigger_id)
             return True
         except Exception as cleanup_error:
             logger.warning(f"⚠️ Could not clean up session directory {session_path}: {cleanup_error}")
@@ -853,9 +960,23 @@ class ReviewGateServer:
             try:
                 if ack_file.exists():
                     try:
-                        data = json.loads(ack_file.read_text())
+                        data = self._validate_session_envelope(
+                            json.loads(ack_file.read_text()),
+                            expected_trigger_id=trigger_id,
+                            expected_source="review_gate_extension",
+                        )
                     except json.JSONDecodeError as e:
                         logger.error(f"❌ Invalid acknowledgement JSON for {trigger_id}: {e}")
+                        try:
+                            ack_file.unlink()
+                        except Exception:
+                            pass
+                        await asyncio.sleep(check_interval)
+                        continue
+                    except ValueError as validation_error:
+                        logger.warning(
+                            f"⚠️ Removing invalid acknowledgement envelope for {trigger_id}: {validation_error}"
+                        )
                         try:
                             ack_file.unlink()
                         except Exception:
@@ -945,15 +1066,28 @@ class ReviewGateServer:
                     if response_file.exists():
                         try:
                             file_content = response_file.read_text().strip()
-                            logger.info(f"📄 Found response file {response_file}: {file_content[:200]}...")
                             
                             # Handle JSON format
                             if file_content.startswith('{'):
                                 try:
-                                    data = json.loads(file_content)
+                                    data = self._validate_session_envelope(
+                                        json.loads(file_content),
+                                        expected_trigger_id=trigger_id,
+                                        expected_source="review_gate_extension",
+                                    )
                                 except json.JSONDecodeError as e:
                                     logger.error(f"❌ JSON decode error in {response_file}: {e}")
                                     self._last_attachments = []
+                                    try:
+                                        response_file.unlink()
+                                    except Exception:
+                                        pass
+                                    continue
+                                except ValueError as validation_error:
+                                    logger.warning(
+                                        f"⚠️ Removing invalid response envelope for {trigger_id}: {validation_error}"
+                                    )
+                                    self._clear_last_attachments()
                                     try:
                                         response_file.unlink()
                                     except Exception:
@@ -1072,11 +1206,16 @@ class ReviewGateServer:
 
             self._cleanup_session_directory(trigger_id)
             trigger_file = _session_file("trigger", trigger_id)
+            session_contract = self._create_session_contract(trigger_id)
             
             trigger_data = {
                 "timestamp": datetime.now().isoformat(),
                 "system": "review-gate-v2",
                 "editor": "cursor",
+                "source": "review_gate_mcp",
+                "trigger_id": session_contract["trigger_id"],
+                "protocol_version": session_contract["protocol_version"],
+                "session_token": session_contract["session_token"],
                 "data": data,
                 "pid": os.getpid(),
                 "active_window": True,
@@ -1282,7 +1421,11 @@ class ReviewGateServer:
                                 continue
                                 
                             with open(trigger_file, 'r', encoding='utf-8') as f:
-                                trigger_data = json.load(f)
+                                trigger_data = self._validate_session_envelope(
+                                    json.load(f),
+                                    expected_source="review_gate_extension",
+                                    required_data_keys=("trigger_id", "tool", "audio_file"),
+                                )
 
                             request_trigger_id = trigger_data.get('data', {}).get('trigger_id')
                             if expected_trigger_id and request_trigger_id and expected_trigger_id != request_trigger_id:
@@ -1423,7 +1566,7 @@ class ReviewGateServer:
         try:
             response_data = {
                 'timestamp': datetime.now().isoformat(),
-                'trigger_id': trigger_id,
+                **self._session_envelope_fields(trigger_id),
                 'transcription': transcription,
                 'success': error is None,
                 'status': 'ok' if error is None else 'error',

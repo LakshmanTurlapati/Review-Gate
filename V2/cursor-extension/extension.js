@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { spawn } = require('child_process');
+const IPC_PROTOCOL_VERSION = 'review-gate-v2-session-v1';
 
 // Cross-platform temp directory helper
 function getTempPath(filename) {
@@ -84,6 +85,7 @@ const SESSION_FILE_NAMES = {
     speechTrigger: 'review_gate_speech_trigger_{triggerId}.json',
     speechResponse: 'review_gate_speech_response_{triggerId}.json'
 };
+const STATUS_FILE_NAME = 'review_gate_status.json';
 const SESSION_STALE_MAX_AGE_MS = 10 * 60 * 1000;
 const STALE_CLEANUP_INTERVAL_MS = 30 * 1000;
 
@@ -102,8 +104,116 @@ function getExistingSessionFilePath(kind, triggerId) {
     return path.join(getSessionPath(sessionId), getSessionFileName(kind, sessionId));
 }
 
+function getStatusFilePath() {
+    return path.join(getRuntimeRoot(), STATUS_FILE_NAME);
+}
+
 function getMcpLogPath() {
-    return path.join(getRuntimeRoot(), 'review_gate_v2.log');
+    return getStatusFilePath();
+}
+
+function buildSessionEnvelope(triggerId, sessionContract, source = 'review_gate_extension') {
+    const contract = sessionContract || getSessionContract(triggerId);
+    if (!contract) {
+        throw new Error(`Missing active session contract for trigger ${triggerId || 'unknown'}`);
+    }
+
+    return {
+        trigger_id: contract.triggerId,
+        protocol_version: contract.protocolVersion,
+        session_token: contract.sessionToken,
+        source: source
+    };
+}
+
+function validateSessionEnvelope(envelope, options = {}) {
+    if (!envelope || typeof envelope !== 'object' || Array.isArray(envelope)) {
+        throw new Error('Session envelope must be a JSON object');
+    }
+
+    const triggerId = String(envelope.trigger_id || (envelope.data && envelope.data.trigger_id) || '').trim();
+    if (!triggerId) {
+        throw new Error('Session envelope is missing trigger_id');
+    }
+
+    const protocolVersion = String(envelope.protocol_version || '').trim();
+    if (protocolVersion !== IPC_PROTOCOL_VERSION) {
+        throw new Error(`Unsupported protocol version: ${protocolVersion || 'missing'}`);
+    }
+
+    const sessionToken = String(envelope.session_token || '').trim();
+    if (!sessionToken) {
+        throw new Error('Session envelope is missing session_token');
+    }
+
+    if (options.expectedTriggerId && triggerId !== options.expectedTriggerId) {
+        throw new Error(`Unexpected trigger_id ${triggerId}`);
+    }
+
+    if (options.expectedSource) {
+        const source = String(envelope.source || '').trim();
+        if (source !== options.expectedSource) {
+            throw new Error(`Unexpected session envelope source: ${source || 'missing'}`);
+        }
+    }
+
+    if (options.expectedSystem) {
+        const system = String(envelope.system || '').trim();
+        if (system !== options.expectedSystem) {
+            throw new Error(`Unexpected session envelope system: ${system || 'missing'}`);
+        }
+    }
+
+    if (options.expectedEditor) {
+        const editor = String(envelope.editor || '').trim();
+        if (editor !== options.expectedEditor) {
+            throw new Error(`Unexpected session envelope editor: ${editor || 'missing'}`);
+        }
+    }
+
+    if (options.expectedSession) {
+        const expectedSession = options.expectedSession;
+        if (expectedSession.triggerId && expectedSession.triggerId !== triggerId) {
+            throw new Error(`Session trigger mismatch for ${triggerId}`);
+        }
+        if (expectedSession.sessionToken && expectedSession.sessionToken !== sessionToken) {
+            throw new Error(`Session token mismatch for ${triggerId}`);
+        }
+        if (expectedSession.protocolVersion && expectedSession.protocolVersion !== protocolVersion) {
+            throw new Error(`Session protocol mismatch for ${triggerId}`);
+        }
+    }
+
+    if (options.requireDataKeys && (!envelope.data || typeof envelope.data !== 'object' || Array.isArray(envelope.data))) {
+        throw new Error('Session envelope data payload must be a JSON object');
+    }
+
+    if (options.requireDataKeys) {
+        for (const key of options.requireDataKeys) {
+            if (envelope.data[key] === undefined || envelope.data[key] === null || envelope.data[key] === '') {
+                throw new Error(`Session envelope data is missing required field '${key}'`);
+            }
+        }
+    }
+
+    if (envelope.data && typeof envelope.data === 'object' && !Array.isArray(envelope.data)) {
+        if (envelope.data.trigger_id && String(envelope.data.trigger_id).trim() !== triggerId) {
+            throw new Error('Nested trigger_id does not match the session envelope');
+        }
+        if (envelope.data.protocol_version && String(envelope.data.protocol_version).trim() !== protocolVersion) {
+            throw new Error('Nested protocol_version does not match the session envelope');
+        }
+        if (envelope.data.session_token && String(envelope.data.session_token).trim() !== sessionToken) {
+            throw new Error('Nested session_token does not match the session envelope');
+        }
+    }
+
+    return {
+        ...envelope,
+        trigger_id: triggerId,
+        protocol_version: protocolVersion,
+        session_token: sessionToken
+    };
 }
 
 function getSessionAudioPath(triggerId, timestamp = Date.now()) {
@@ -171,7 +281,9 @@ let currentPopupContext = {
     triggerId: null,
     mcpIntegration: false,
     specialHandling: null,
-    toolData: null
+    toolData: null,
+    sessionToken: null,
+    protocolVersion: null
 };
 let currentRecording = null;
 
@@ -181,7 +293,9 @@ function setPopupContext(nextContext = {}) {
         triggerId: nextContext.triggerId || null,
         mcpIntegration: Boolean(nextContext.mcpIntegration),
         specialHandling: nextContext.specialHandling || null,
-        toolData: nextContext.toolData || null
+        toolData: nextContext.toolData || null,
+        sessionToken: nextContext.sessionToken || null,
+        protocolVersion: nextContext.protocolVersion || null
     };
 }
 
@@ -192,11 +306,29 @@ function getPopupContext() {
             triggerId: activeMcpSession.triggerId,
             mcpIntegration: true,
             specialHandling: activeMcpSession.specialHandling || null,
-            toolData: activeMcpSession.toolData || null
+            toolData: activeMcpSession.toolData || null,
+            sessionToken: activeMcpSession.sessionToken || null,
+            protocolVersion: activeMcpSession.protocolVersion || null
         };
     }
 
     return { ...currentPopupContext };
+}
+
+function getSessionContract(triggerId) {
+    if (!triggerId) {
+        return null;
+    }
+
+    if (activeMcpSession && activeMcpSession.triggerId === triggerId) {
+        return {
+            triggerId: activeMcpSession.triggerId,
+            sessionToken: activeMcpSession.sessionToken,
+            protocolVersion: activeMcpSession.protocolVersion
+        };
+    }
+
+    return null;
 }
 
 function clearActiveMcpSession(triggerId = null) {
@@ -460,7 +592,7 @@ function maybeCleanupStaleSessionFiles(maxAgeMs = SESSION_STALE_MAX_AGE_MS) {
     return cleanupStaleSessionFiles(maxAgeMs);
 }
 
-function writeSessionResult(triggerId, status, payload = {}) {
+function writeSessionResult(triggerId, status, payload = {}, sessionContract = null) {
     if (!triggerId) {
         logMessage(`Cannot write session result without trigger ID (status: ${status})`);
         return false;
@@ -473,25 +605,24 @@ function writeSessionResult(triggerId, status, payload = {}) {
                 ? 'SESSION_CANCELLED'
                 : 'SESSION_RESULT'
     );
-    const responseData = {
-        timestamp: new Date().toISOString(),
-        trigger_id: triggerId,
-        status: status,
-        event_type: eventType,
-        message: payload.message || '',
-        user_input: payload.userInput || '',
-        response: payload.userInput || '',
-        attachments: payload.attachments || [],
-        owner_trigger_id: payload.ownerTriggerId || null,
-        owner_message: payload.ownerMessage || null,
-        tool_type: payload.toolType || null,
-        source: 'review_gate_extension',
-        popup_active: Boolean(activeMcpSession && activeMcpSession.triggerId === triggerId)
-    };
-
     const responseFile = getSessionFilePath('response', triggerId);
 
     try {
+        const responseData = {
+            timestamp: new Date().toISOString(),
+            ...buildSessionEnvelope(triggerId, sessionContract),
+            status: status,
+            event_type: eventType,
+            message: payload.message || '',
+            user_input: payload.userInput || '',
+            response: payload.userInput || '',
+            attachments: payload.attachments || [],
+            owner_trigger_id: payload.ownerTriggerId || null,
+            owner_message: payload.ownerMessage || null,
+            tool_type: payload.toolType || null,
+            source: 'review_gate_extension',
+            popup_active: Boolean(activeMcpSession && activeMcpSession.triggerId === triggerId)
+        };
         fs.writeFileSync(responseFile, JSON.stringify(responseData, null, 2));
         logMessage(`Session result written (${status}): ${responseFile}`);
         return true;
@@ -501,26 +632,25 @@ function writeSessionResult(triggerId, status, payload = {}) {
     }
 }
 
-function writeSessionResponse(triggerId, inputText, attachments = [], eventType = 'MCP_RESPONSE') {
+function writeSessionResponse(triggerId, inputText, attachments = [], eventType = 'MCP_RESPONSE', sessionContract = null) {
     if (!triggerId) {
         logMessage('Cannot write MCP response without trigger ID');
         return false;
     }
 
-    const responseData = {
-        timestamp: new Date().toISOString(),
-        trigger_id: triggerId,
-        user_input: inputText,
-        response: inputText,
-        message: inputText,
-        attachments: attachments,
-        event_type: eventType,
-        source: 'review_gate_extension'
-    };
-
     const responseFile = getSessionFilePath('response', triggerId);
 
     try {
+        const responseData = {
+            timestamp: new Date().toISOString(),
+            ...buildSessionEnvelope(triggerId, sessionContract),
+            user_input: inputText,
+            response: inputText,
+            message: inputText,
+            attachments: attachments,
+            event_type: eventType,
+            source: 'review_gate_extension'
+        };
         fs.writeFileSync(responseFile, JSON.stringify(responseData, null, 2));
         logMessage(`MCP response written: ${responseFile}`);
         return true;
@@ -708,55 +838,53 @@ function processTriggerFile(context, filePath) {
             return false;
         }
 
-        const data = fs.readFileSync(filePath, 'utf8');
-        const triggerData = JSON.parse(data);
+        const triggerData = validateSessionEnvelope(JSON.parse(fs.readFileSync(filePath, 'utf8')), {
+            expectedSource: 'review_gate_mcp',
+            expectedSystem: 'review-gate-v2',
+            expectedEditor: 'cursor',
+            requireDataKeys: ['trigger_id', 'tool']
+        });
 
-        if (triggerData.editor && triggerData.editor !== 'cursor') {
-            removeSessionFile(filePath, 'Removed non-Cursor trigger file');
-            return false;
-        }
-
-        if (triggerData.system && triggerData.system !== 'review-gate-v2') {
-            removeSessionFile(filePath, 'Removed non-Review Gate trigger file');
-            return false;
-        }
-
-        if (!triggerData.data || !triggerData.data.trigger_id) {
-            removeSessionFile(filePath, 'Removed malformed trigger file');
-            return false;
-        }
-
-        if (handledTriggerIds.has(triggerData.data.trigger_id)) {
+        if (handledTriggerIds.has(triggerData.trigger_id)) {
             removeSessionFile(filePath, 'Removed already-handled trigger file');
             return false;
         }
 
-        if (activeMcpSession && activeMcpSession.triggerId !== triggerData.data.trigger_id) {
+        if (activeMcpSession && activeMcpSession.triggerId !== triggerData.trigger_id) {
             const busyMessage = `Review Gate popup is already handling trigger ${activeMcpSession.triggerId}`;
+            const triggerContract = {
+                triggerId: triggerData.trigger_id,
+                sessionToken: triggerData.session_token,
+                protocolVersion: triggerData.protocol_version
+            };
 
-            sendExtensionAcknowledgement(triggerData.data.trigger_id, triggerData.data.tool, {
+            sendExtensionAcknowledgement(triggerData.trigger_id, triggerData.data.tool, {
                 acknowledged: false,
                 status: 'busy',
                 message: busyMessage,
                 ownerTriggerId: activeMcpSession.triggerId
-            });
-            writeSessionResult(triggerData.data.trigger_id, 'busy', {
+            }, triggerContract);
+            writeSessionResult(triggerData.trigger_id, 'busy', {
                 eventType: 'SESSION_BUSY',
                 message: busyMessage,
                 ownerTriggerId: activeMcpSession.triggerId,
                 ownerMessage: activeMcpSession.message || null,
                 toolType: triggerData.data.tool
-            });
+            }, triggerContract);
 
-            handledTriggerIds.add(triggerData.data.trigger_id);
+            handledTriggerIds.add(triggerData.trigger_id);
             removeSessionFile(filePath, 'Rejected busy trigger file');
             return true;
         }
 
         console.log(`Review Gate triggered: ${triggerData.data.tool}`);
 
-        handleReviewGateToolCall(context, triggerData.data);
-        handledTriggerIds.add(triggerData.data.trigger_id);
+        handleReviewGateToolCall(context, triggerData.data, {
+            triggerId: triggerData.trigger_id,
+            sessionToken: triggerData.session_token,
+            protocolVersion: triggerData.protocol_version
+        });
+        handledTriggerIds.add(triggerData.trigger_id);
         removeSessionFile(filePath, 'Consumed trigger file');
         return true;
     } catch (error) {
@@ -768,7 +896,7 @@ function processTriggerFile(context, filePath) {
     }
 }
 
-function handleReviewGateToolCall(context, toolData) {
+function handleReviewGateToolCall(context, toolData, sessionContract) {
     // Silent tool call processing
     
     let popupOptions = {};
@@ -856,6 +984,8 @@ function handleReviewGateToolCall(context, toolData) {
     
     // Add trigger ID to popup options
     popupOptions.triggerId = toolData.trigger_id;
+    popupOptions.sessionToken = sessionContract ? sessionContract.sessionToken : null;
+    popupOptions.protocolVersion = sessionContract ? sessionContract.protocolVersion : null;
     console.log(`🔍 DEBUG: Setting popup triggerId to: ${toolData.trigger_id}`);
     
     // Force consistent title regardless of tool call
@@ -865,22 +995,22 @@ function handleReviewGateToolCall(context, toolData) {
     openReviewGatePopup(context, popupOptions);
     
     // FIXED: Send acknowledgement to MCP server that popup was activated
-    sendExtensionAcknowledgement(toolData.trigger_id, toolData.tool);
+    sendExtensionAcknowledgement(toolData.trigger_id, toolData.tool, {}, sessionContract);
     
     // Show appropriate notification
     const toolDisplayName = toolData.tool.replace('_', ' ').toUpperCase();
     vscode.window.showInformationMessage(`Cursor Agent triggered "${toolDisplayName}" - Review Gate popup opened for your input!`);
 }
 
-function sendExtensionAcknowledgement(triggerId, toolType, options = {}) {
+function sendExtensionAcknowledgement(triggerId, toolType, options = {}, sessionContract = null) {
     try {
         const timestamp = new Date().toISOString();
         const acknowledged = options.acknowledged !== undefined ? Boolean(options.acknowledged) : true;
         const ackData = {
+            ...buildSessionEnvelope(triggerId, sessionContract),
             acknowledged: acknowledged,
             status: options.status || (acknowledged ? 'acknowledged' : 'error'),
             timestamp: timestamp,
-            trigger_id: triggerId,
             tool_type: toolType,
             extension: 'review-gate-v2',
             popup_activated: acknowledged,
@@ -906,7 +1036,9 @@ function openReviewGatePopup(context, options = {}) {
         toolData = null,
         mcpIntegration = false,
         triggerId = null,
-        specialHandling = null
+        specialHandling = null,
+        sessionToken = null,
+        protocolVersion = null
     } = options;
 
     const nextPopupContext = {
@@ -914,12 +1046,16 @@ function openReviewGatePopup(context, options = {}) {
         triggerId: triggerId,
         mcpIntegration: mcpIntegration,
         specialHandling: specialHandling,
-        toolData: toolData
+        toolData: toolData,
+        sessionToken: sessionToken,
+        protocolVersion: protocolVersion
     };
 
     if (mcpIntegration && triggerId) {
         activeMcpSession = {
             triggerId: triggerId,
+            sessionToken: sessionToken,
+            protocolVersion: protocolVersion,
             message: message,
             specialHandling: specialHandling,
             toolData: toolData
@@ -2383,6 +2519,22 @@ async function handleSpeechToText(audioData, triggerId, isFilePath = false) {
             return;
         }
 
+        const sessionContract = getSessionContract(sessionTriggerId);
+        if (!sessionContract) {
+            logMessage(`Rejected speech request without an active MCP session contract for ${sessionTriggerId}`);
+            cleanupSessionSpeechArtifacts(sessionTriggerId, 'Rejected unauthenticated speech request', {
+                removeAudioFiles: true
+            });
+            if (chatPanel) {
+                chatPanel.webview.postMessage({
+                    command: 'speechTranscribed',
+                    transcription: '',
+                    error: 'Speech transcription is only available for the active Review Gate session'
+                });
+            }
+            return;
+        }
+
         if (activeMcpSession && activeMcpSession.triggerId !== sessionTriggerId) {
             console.log(`Ignoring speech request for stale trigger: ${sessionTriggerId}`);
             if (isFilePath && audioData && fs.existsSync(audioData)) {
@@ -2413,6 +2565,7 @@ async function handleSpeechToText(audioData, triggerId, isFilePath = false) {
             timestamp: new Date().toISOString(),
             system: "review-gate-v2",
             editor: "cursor",
+            ...buildSessionEnvelope(sessionTriggerId, sessionContract),
             data: {
                 tool: "speech_to_text",
                 audio_file: tempAudioPath,
@@ -2442,13 +2595,11 @@ async function handleSpeechToText(audioData, triggerId, isFilePath = false) {
             
             if (fs.existsSync(resultFile)) {
                 try {
-                    const result = JSON.parse(fs.readFileSync(resultFile, 'utf8'));
-                    if (result.trigger_id && result.trigger_id !== sessionTriggerId) {
-                        removeSessionFile(resultFile, 'Removed mismatched speech response file');
-                        removeSessionFile(triggerFile, 'Removed mismatched speech trigger file');
-                        clearInterval(pollForResult);
-                        return;
-                    }
+                    const result = validateSessionEnvelope(JSON.parse(fs.readFileSync(resultFile, 'utf8')), {
+                        expectedSource: 'review_gate_whisper',
+                        expectedTriggerId: sessionTriggerId,
+                        expectedSession: sessionContract
+                    });
                     
                     if (result.transcription) {
                         if (chatPanel && isSpeechSessionCurrent(sessionTriggerId)) {
