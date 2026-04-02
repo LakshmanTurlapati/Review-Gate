@@ -108,10 +108,6 @@ function getStatusFilePath() {
     return path.join(getRuntimeRoot(), STATUS_FILE_NAME);
 }
 
-function getMcpLogPath() {
-    return getStatusFilePath();
-}
-
 function isPathWithinRuntimeRoot(candidatePath, runtimeRoot) {
     const relativePath = path.relative(runtimeRoot, candidatePath);
     return relativePath === '' || (!relativePath.startsWith('..') && !path.isAbsolute(relativePath));
@@ -459,10 +455,10 @@ function cleanupSessionDirectory(triggerId, reason = 'session cleanup') {
 
     try {
         fs.rmSync(sessionPath, { recursive: true, force: true });
-        logMessage(`${reason}: removed session directory ${sessionPath}`);
+        logMessage(`${reason}: removed session directory ${path.basename(sessionPath)}`);
         return true;
     } catch (error) {
-        logMessage(`Failed to remove session directory ${sessionPath}: ${error.message}`);
+        logMessage(`Failed to remove session directory ${path.basename(sessionPath)}: ${error.message}`);
         return false;
     }
 }
@@ -494,11 +490,11 @@ function removeSessionFile(filePath, reason = 'session file cleanup') {
         fs.lstatSync(filePath);
         fs.rmSync(filePath, { force: true });
         if (!reason.includes('Removed invalid runtime path')) {
-            logMessage(`${reason}: ${filePath}`);
+            logMessage(`${reason}: ${path.basename(filePath)}`);
         }
     } catch (error) {
         if (error.code !== 'ENOENT') {
-            logMessage(`Failed to remove ${filePath}: ${error.message}`);
+            logMessage(`Failed to remove ${path.basename(filePath)}: ${error.message}`);
         }
     }
 }
@@ -724,16 +720,16 @@ function writeSessionResult(triggerId, status, payload = {}, sessionContract = n
             response: payload.userInput || '',
             attachments: payload.attachments || [],
             owner_trigger_id: payload.ownerTriggerId || null,
-            owner_message: payload.ownerMessage || null,
+            owner_message_present: Boolean(payload.ownerMessage),
             tool_type: payload.toolType || null,
             source: 'review_gate_extension',
             popup_active: Boolean(activeMcpSession && activeMcpSession.triggerId === triggerId)
         };
         writeJsonAtomically(responseFile, responseData);
-        logMessage(`Session result written (${status}): ${responseFile}`);
+        logMessage(`Session result written (${status}): ${path.basename(responseFile)}`);
         return true;
     } catch (error) {
-        logMessage(`Failed to write session result ${responseFile}: ${error.message}`);
+        logMessage(`Failed to write session result ${path.basename(responseFile)}: ${error.message}`);
         return false;
     }
 }
@@ -758,10 +754,10 @@ function writeSessionResponse(triggerId, inputText, attachments = [], eventType 
             source: 'review_gate_extension'
         };
         writeJsonAtomically(responseFile, responseData);
-        logMessage(`MCP response written: ${responseFile}`);
+        logMessage(`MCP response written: ${path.basename(responseFile)}`);
         return true;
     } catch (error) {
-        logMessage(`Failed to write response file ${responseFile}: ${error.message}`);
+        logMessage(`Failed to write response file ${path.basename(responseFile)}: ${error.message}`);
         return false;
     }
 }
@@ -784,14 +780,11 @@ function postPopupPrompt(message, sessionContext) {
 }
 
 function activate(context) {
-    console.log('Review Gate V2 extension is now active in Cursor for MCP integration!');
-    
     // Create output channel for logging
     outputChannel = vscode.window.createOutputChannel('Review Gate V2 ゲート');
     context.subscriptions.push(outputChannel);
     
-    // Silent activation - only log to console, not output channel
-    console.log('Review Gate V2 extension activated for Cursor MCP integration by Lakshman Turlapati');
+    logMessage('Review Gate V2 extension activated for Cursor MCP integration');
 
     // Register command to open Review Gate manually
     let disposable = vscode.commands.registerCommand('reviewGate.openChat', () => {
@@ -825,8 +818,10 @@ function logMessage(message) {
 
 function logUserInput(inputText, eventType = 'MESSAGE', triggerId = null, attachments = []) {
     const timestamp = new Date().toISOString();
-    const logMsg = `[${timestamp}] ${eventType}: ${inputText}`;
-    console.log(`REVIEW GATE USER INPUT: ${inputText}`);
+    const attachmentCount = Array.isArray(attachments) ? attachments.length : 0;
+    const charCount = typeof inputText === 'string' ? inputText.length : 0;
+    const sessionLabel = triggerId ? `trigger=${triggerId}` : 'trigger=manual';
+    const logMsg = `[${timestamp}] ${eventType} ${sessionLabel} chars=${charCount} attachments=${attachmentCount}`;
     
     if (outputChannel) {
         outputChannel.appendLine(logMsg);
@@ -856,28 +851,30 @@ function startMcpStatusMonitoring(context) {
 
 function checkMcpStatus() {
     try {
-        // Check if MCP server log exists and is recent
-        const mcpLogPath = getMcpLogPath();
-        if (fs.existsSync(mcpLogPath)) {
-            const stats = fs.statSync(mcpLogPath);
-            const now = Date.now();
-            const fileAge = now - stats.mtime.getTime();
-            
-            // Consider MCP active if log file was modified within last 30 seconds
-            const wasActive = mcpStatus;
-            mcpStatus = fileAge < 30000;
-            
-            if (wasActive !== mcpStatus) {
-                // Silent status change - only update UI
-                updateChatPanelStatus();
-            }
-        } else {
+        const statusPath = getStatusFilePath();
+        if (!fs.existsSync(statusPath)) {
             if (mcpStatus) {
                 mcpStatus = false;
                 updateChatPanelStatus();
             }
+            return;
+        }
+
+        const statusData = readJsonFileSafely(statusPath);
+        const heartbeatTimestamp = Date.parse(String(statusData.timestamp || ''));
+        const serverState = String(statusData.server_state || '').trim();
+        if (!Number.isFinite(heartbeatTimestamp) || !serverState) {
+            throw new Error('Malformed MCP status heartbeat');
+        }
+
+        const heartbeatAge = Date.now() - heartbeatTimestamp;
+        const nextStatus = heartbeatAge < 30000 && !['shutting_down', 'stopped'].includes(serverState);
+        if (nextStatus !== mcpStatus) {
+            mcpStatus = nextStatus;
+            updateChatPanelStatus();
         }
     } catch (error) {
+        logMessage(`MCP status check failed: ${error.message}`);
         if (mcpStatus) {
             mcpStatus = false;
             updateChatPanelStatus();
@@ -988,7 +985,7 @@ function processTriggerFile(context, filePath) {
             return true;
         }
 
-        console.log(`Review Gate triggered: ${triggerData.data.tool}`);
+        logMessage(`Review Gate triggered tool=${triggerData.data.tool} trigger=${triggerData.trigger_id}`);
 
         handleReviewGateToolCall(context, triggerData.data, {
             triggerId: triggerData.trigger_id,
@@ -1000,7 +997,7 @@ function processTriggerFile(context, filePath) {
         return true;
     } catch (error) {
         if (error.code !== 'ENOENT') { // Don't log file not found errors
-            console.log(`Error reading trigger file: ${error.message}`);
+            logMessage(`Error reading trigger file: ${error.message}`);
             removeSessionFile(filePath, 'Removed unreadable trigger file');
         }
         return false;
@@ -1097,7 +1094,7 @@ function handleReviewGateToolCall(context, toolData, sessionContract) {
     popupOptions.triggerId = toolData.trigger_id;
     popupOptions.sessionToken = sessionContract ? sessionContract.sessionToken : null;
     popupOptions.protocolVersion = sessionContract ? sessionContract.protocolVersion : null;
-    console.log(`🔍 DEBUG: Setting popup triggerId to: ${toolData.trigger_id}`);
+    logMessage(`Opening Review Gate popup for trigger=${toolData.trigger_id}`);
     
     // Force consistent title regardless of tool call
     popupOptions.title = "Review Gate";
@@ -1135,7 +1132,7 @@ function sendExtensionAcknowledgement(triggerId, toolType, options = {}, session
         // Silent acknowledgement 
         
     } catch (error) {
-        console.log(`Could not send extension acknowledgement: ${error.message}`);
+        logMessage(`Could not send extension acknowledgement: ${error.message}`);
     }
 }
 
@@ -2025,7 +2022,7 @@ function getReviewGateHTML(title = "Review Gate", mcpIntegration = false) {
             updateImageCounter();
             
             // Log removal
-            console.log(\`🗑️ Image removed: \${imageId}\`);
+            console.log('🗑️ Image removed from attachment list');
             vscode.postMessage({
                 command: 'logImageRemoved',
                 imageId: imageId
@@ -2099,7 +2096,7 @@ function getReviewGateHTML(title = "Review Gate", mcpIntegration = false) {
                     source: 'paste' // Mark as pasted image
                 };
                 
-                console.log(\`📋 Image pasted: \${fileName} (\${file.size} bytes)\`);
+                console.log('📋 Image pasted into attachment list');
                 
                 // Log the pasted image for MCP integration
                 vscode.postMessage({
@@ -2335,12 +2332,12 @@ function getReviewGateHTML(title = "Review Gate", mcpIntegration = false) {
                     break;
                 case 'speechTranscribed':
                     // Handle speech-to-text result
-                    console.log('📝 Speech transcription received:', message);
+                    console.log('📝 Speech transcription received for active session');
                     if (message.transcription && message.transcription.trim()) {
                         messageInput.value = message.transcription.trim();
                         adjustTextareaHeight();
                         messageInput.focus();
-                        console.log('✅ Text injected into input:', message.transcription.trim());
+                        console.log('✅ Text injected into the input');
                         // Reset mic icon after successful transcription
                         resetMicIcon();
                     } else if (message.error) {
@@ -2599,7 +2596,7 @@ function handleImageUpload(triggerId) {
                     }
                     
                 } catch (error) {
-                    console.log(`Error processing image ${fileName}: ${error.message}`);
+                    console.log(`Error processing selected image: ${error.message}`);
                     vscode.window.showErrorMessage(`Failed to process image: ${fileName}`);
                 }
             });
@@ -2647,7 +2644,7 @@ async function handleSpeechToText(audioData, triggerId, isFilePath = false) {
         }
 
         if (activeMcpSession && activeMcpSession.triggerId !== sessionTriggerId) {
-            console.log(`Ignoring speech request for stale trigger: ${sessionTriggerId}`);
+            logMessage(`Ignoring speech request for stale trigger=${sessionTriggerId}`);
             if (isFilePath && audioData && fs.existsSync(audioData)) {
                 fs.unlinkSync(audioData);
             }
@@ -2663,13 +2660,13 @@ async function handleSpeechToText(audioData, triggerId, isFilePath = false) {
         
         if (isFilePath) {
             tempAudioPath = audioData;
-            console.log(`Using existing audio file for transcription: ${tempAudioPath}`);
+            logMessage(`Using existing audio file for transcription file=${path.basename(tempAudioPath)}`);
         } else {
             const base64Data = audioData.split(',')[1];
             const audioBuffer = Buffer.from(base64Data, 'base64');
             tempAudioPath = getSessionAudioPath(sessionTriggerId, Date.now());
             fs.writeFileSync(tempAudioPath, audioBuffer);
-            console.log(`Audio saved for transcription: ${tempAudioPath}`);
+            logMessage(`Audio buffered for transcription file=${path.basename(tempAudioPath)}`);
         }
         
         const transcriptionRequest = {
@@ -2689,7 +2686,7 @@ async function handleSpeechToText(audioData, triggerId, isFilePath = false) {
         const triggerFile = getSessionFilePath('speechTrigger', sessionTriggerId);
         writeJsonAtomically(triggerFile, transcriptionRequest);
         
-        console.log(`Speech-to-text request sent: ${triggerFile}`);
+        logMessage(`Speech-to-text request sent trigger=${sessionTriggerId} file=${path.basename(triggerFile)}`);
         
         const maxWaitTime = 30000;
         const pollInterval = 500;
@@ -2720,14 +2717,14 @@ async function handleSpeechToText(audioData, triggerId, isFilePath = false) {
                             });
                         }
                         
-                        console.log(`Speech transcribed: ${result.transcription}`);
-                        logUserInput(`Speech transcribed: ${result.transcription}`, 'SPEECH_TRANSCRIBED', sessionTriggerId);
+                        logMessage(`Speech transcription received trigger=${sessionTriggerId} chars=${result.transcription.length}`);
+                        logUserInput('', 'SPEECH_TRANSCRIBED', sessionTriggerId);
                     }
                     
                     removeSessionFile(resultFile, 'Cleaned up speech response file');
                     removeSessionFile(triggerFile, 'Cleaned up speech trigger file');
                 } catch (error) {
-                    console.log(`Error reading transcription result: ${error.message}`);
+                    logMessage(`Error reading transcription result: ${error.message}`);
                 }
                 
                 clearInterval(pollForResult);
@@ -2735,7 +2732,7 @@ async function handleSpeechToText(audioData, triggerId, isFilePath = false) {
             
             waitTime += pollInterval;
             if (waitTime >= maxWaitTime) {
-                console.log(`Speech-to-text timeout for ${sessionTriggerId}`);
+                logMessage(`Speech-to-text timeout trigger=${sessionTriggerId}`);
                 if (chatPanel && isSpeechSessionCurrent(sessionTriggerId)) {
                     chatPanel.webview.postMessage({
                         command: 'speechTranscribed',
@@ -2748,7 +2745,7 @@ async function handleSpeechToText(audioData, triggerId, isFilePath = false) {
         }, pollInterval);
         
     } catch (error) {
-        console.log(`Speech-to-text error: ${error.message}`);
+        logMessage(`Speech-to-text error: ${error.message}`);
         cleanupSessionSpeechArtifacts(sessionTriggerId, 'Speech transcription error');
         if (chatPanel && (!sessionTriggerId || isSpeechSessionCurrent(sessionTriggerId))) {
             chatPanel.webview.postMessage({
@@ -2884,10 +2881,10 @@ async function startNodeRecording(triggerId) {
         });
         
         // Validate SoX setup before recording
-        console.log('🔍 Validating SoX and microphone setup...');
+        logMessage(`Validating SoX and microphone access trigger=${sessionTriggerId}`);
         const validation = await validateSoxSetup();
         if (!validation.success) {
-            console.log(`❌ SoX validation failed: ${validation.error}`);
+            logMessage(`SoX validation failed trigger=${sessionTriggerId}: ${validation.error}`);
             if (chatPanel) {
                 chatPanel.webview.postMessage({
                     command: 'speechTranscribed',
@@ -2897,12 +2894,12 @@ async function startNodeRecording(triggerId) {
             }
             return;
         }
-        console.log('✅ SoX validation successful - proceeding with recording');
+        logMessage(`SoX validation successful trigger=${sessionTriggerId}`);
         
         const timestamp = Date.now();
         const audioFile = getSessionAudioPath(sessionTriggerId, timestamp);
         
-        console.log(`🎤 Starting SoX recording: ${audioFile}`);
+        logMessage(`Starting SoX recording trigger=${sessionTriggerId} file=${path.basename(audioFile)}`);
         
         // Use sox directly to record audio
         // sox -d -r 16000 -c 1 output.wav (let SoX auto-detect bit depth)
@@ -2913,7 +2910,7 @@ async function startNodeRecording(triggerId) {
             audioFile       // Output file
         ];
         
-        console.log(`🎤 Starting sox with args:`, soxArgs);
+        logMessage(`Launching sox process trigger=${sessionTriggerId} sample_rate=16000 channels=1`);
         
         // Spawn sox process
         const recordingProcess = spawn('sox', soxArgs);
@@ -2928,7 +2925,7 @@ async function startNodeRecording(triggerId) {
         
         // Handle sox process events
         recordingProcess.on('error', (error) => {
-            console.log(`❌ SoX process error: ${error.message}`);
+            logMessage(`SoX process error trigger=${sessionTriggerId}: ${error.message}`);
             if (chatPanel) {
                 chatPanel.webview.postMessage({
                     command: 'speechTranscribed',
@@ -2945,10 +2942,10 @@ async function startNodeRecording(triggerId) {
         });
         
         recordingProcess.stderr.on('data', (data) => {
-            console.log(`SoX stderr: ${data}`);
+            logMessage(`SoX stderr trigger=${sessionTriggerId}: ${String(data).trim().slice(0, 120)}`);
         });
         
-        console.log(`✅ SoX recording started: PID ${recordingProcess.pid}, file: ${audioFile}`);
+        logMessage(`SoX recording started trigger=${sessionTriggerId} pid=${recordingProcess.pid} file=${path.basename(audioFile)}`);
         
         // Send confirmation to webview that recording has started
         if (chatPanel) {
@@ -2959,7 +2956,7 @@ async function startNodeRecording(triggerId) {
         }
         
     } catch (error) {
-        console.log(`❌ Failed to start SoX recording: ${error.message}`);
+        logMessage(`Failed to start SoX recording: ${error.message}`);
         if (chatPanel) {
             chatPanel.webview.postMessage({
                 command: 'speechTranscribed',
@@ -2975,7 +2972,7 @@ function stopNodeRecording(triggerId) {
     try {
         const sessionTriggerId = resolveSpeechTriggerId(triggerId);
         if (!currentRecording) {
-            console.log('No recording in progress');
+            logMessage('No recording in progress');
             if (chatPanel) {
                 chatPanel.webview.postMessage({
                     command: 'speechTranscribed',
@@ -2988,7 +2985,7 @@ function stopNodeRecording(triggerId) {
 
         const recording = currentRecording;
         if (!sessionTriggerId || recording.triggerId !== sessionTriggerId || !isSpeechSessionCurrent(recording.triggerId)) {
-            console.log(`Discarding stale recording for trigger: ${recording.triggerId}`);
+            logMessage(`Discarding stale recording trigger=${recording.triggerId}`);
             cancelActiveRecording('Discarded stale recording', recording.triggerId);
             cleanupSessionSpeechArtifacts(recording.triggerId, 'Discarded stale recording cleanup', {
                 removeAudioFiles: true
@@ -2999,24 +2996,24 @@ function stopNodeRecording(triggerId) {
         currentRecording = null;
         const audioFile = recording.audioFile;
         const recordingPid = recording.pid;
-        console.log(`🛑 Stopping SoX recording: PID ${recordingPid}, file: ${audioFile}`);
+        logMessage(`Stopping SoX recording trigger=${sessionTriggerId} pid=${recordingPid} file=${path.basename(audioFile)}`);
         
         // Stop the sox process by sending SIGTERM
         recording.kill('SIGTERM');
         
         // Wait for process to exit and file to be finalized
         recording.on('exit', (code, signal) => {
-            console.log(`📝 SoX process exited with code: ${code}, signal: ${signal}`);
+            logMessage(`SoX process exited trigger=${sessionTriggerId} code=${code} signal=${signal}`);
             if (recording.forceKillTimer) {
                 clearTimeout(recording.forceKillTimer);
             }
             
             // Give a moment for file system to sync
             recording.finalizeTimer = setTimeout(() => {
-                console.log(`📝 Checking for audio file: ${audioFile}`);
+                logMessage(`Checking finalized audio file trigger=${sessionTriggerId} file=${path.basename(audioFile)}`);
 
                 if (!isSpeechSessionCurrent(sessionTriggerId)) {
-                    console.log(`Ignoring finalized recording for inactive session: ${sessionTriggerId}`);
+                    logMessage(`Ignoring finalized recording for inactive session trigger=${sessionTriggerId}`);
                     cleanupSessionSpeechArtifacts(sessionTriggerId, 'Ignored stale recording result', {
                         removeAudioFiles: true
                     });
@@ -3025,15 +3022,15 @@ function stopNodeRecording(triggerId) {
                 
                 if (fs.existsSync(audioFile)) {
                     const stats = fs.statSync(audioFile);
-                    console.log(`✅ Audio file created: ${audioFile} (${stats.size} bytes)`);
+                    logMessage(`Audio file created trigger=${sessionTriggerId} file=${path.basename(audioFile)} bytes=${stats.size}`);
                     
                     // Check minimum file size (more generous for SoX)
                     if (stats.size > 500) {
-                        console.log(`🎤 Audio file ready for transcription: ${audioFile} (${stats.size} bytes)`);
+                        logMessage(`Audio file ready for transcription trigger=${sessionTriggerId} file=${path.basename(audioFile)} bytes=${stats.size}`);
                         // Send to MCP server for transcription
                         handleSpeechToText(audioFile, sessionTriggerId, true);
                     } else {
-                        console.log('⚠️ Audio file too small, probably no speech detected');
+                        logMessage(`Audio file too small for transcription trigger=${sessionTriggerId} file=${path.basename(audioFile)} bytes=${stats.size}`);
                         if (chatPanel) {
                             chatPanel.webview.postMessage({
                                 command: 'speechTranscribed',
@@ -3045,11 +3042,11 @@ function stopNodeRecording(triggerId) {
                         try {
                             fs.unlinkSync(audioFile);
                         } catch (e) {
-                            console.log(`Could not clean up small file: ${e.message}`);
+                            logMessage(`Could not clean up small audio file: ${e.message}`);
                         }
                     }
                 } else {
-                    console.log('❌ Audio file was not created');
+                    logMessage(`Audio file was not created trigger=${sessionTriggerId}`);
                     if (chatPanel) {
                         chatPanel.webview.postMessage({
                             command: 'speechTranscribed',

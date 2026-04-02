@@ -125,6 +125,7 @@ SESSION_FILE_NAMES = {
     "speech_response": "review_gate_speech_response_{trigger_id}.json",
 }
 IPC_PROTOCOL_VERSION = "review-gate-v2-session-v1"
+STATUS_FILE_NAME = "review_gate_status.json"
 
 
 def _session_file(kind: str, trigger_id: str) -> Path:
@@ -247,21 +248,8 @@ def _write_json_atomically(path: Path, payload: Dict[str, Any]) -> None:
             except OSError:
                 pass
 
-# Configure logging with immediate flush
-log_file_path = str(get_runtime_root() / 'review_gate_v2.log')
-
-# Create handlers separately to handle Windows file issues
+# Configure logging with immediate flush on stderr only
 handlers = []
-try:
-    # File handler - may fail on Windows if file is locked
-    file_handler = logging.FileHandler(log_file_path, mode='a', encoding='utf-8')
-    file_handler.setLevel(logging.INFO)
-    handlers.append(file_handler)
-except Exception as e:
-    # If file logging fails, just use stderr
-    print(f"Warning: Could not create log file: {e}", file=sys.stderr)
-
-# Always add stderr handler
 stderr_handler = logging.StreamHandler(sys.stderr)
 stderr_handler.setLevel(logging.INFO)
 handlers.append(stderr_handler)
@@ -272,12 +260,6 @@ logging.basicConfig(
     handlers=handlers
 )
 logger = logging.getLogger(__name__)
-logger.info(f"🔧 Log file path: {log_file_path}")
-
-# Force immediate log flushing
-for handler in logger.handlers:
-    if hasattr(handler, 'flush'):
-        handler.flush()
 
 class ReviewGateServer:
     def __init__(self):
@@ -289,6 +271,7 @@ class ReviewGateServer:
         self._last_session_outcome = {"status": "idle", "message": ""}
         self._last_acknowledgement_outcome = {"status": "idle", "message": ""}
         self._session_contracts: Dict[str, Dict[str, str]] = {}
+        self._heartbeat_count = 0
         self._whisper_model = None
         
         # Initialize Whisper model with comprehensive error handling
@@ -302,6 +285,7 @@ class ReviewGateServer:
             
         # Start speech trigger monitoring
         self._start_speech_monitoring()
+        self._write_status_heartbeat("starting")
         
         logger.info("🚀 Review Gate 2.0 server initialized by Lakshman Turlapati for Cursor integration")
         # Ensure log is written immediately
@@ -371,6 +355,24 @@ class ReviewGateServer:
     def _clear_last_attachments(self):
         """Reset attachment state for any non-response outcome."""
         self._last_attachments = []
+
+    def _status_file(self) -> Path:
+        return get_runtime_root() / STATUS_FILE_NAME
+
+    def _write_status_heartbeat(self, server_state: str = "running") -> None:
+        status_payload = {
+            "timestamp": datetime.now().isoformat(),
+            "source": "review_gate_mcp_status",
+            "protocol_version": IPC_PROTOCOL_VERSION,
+            "pid": os.getpid(),
+            "server_state": server_state,
+            "heartbeat_count": self._heartbeat_count,
+            "heartbeat_interval_seconds": 10,
+            "session_status": self._last_session_outcome.get("status", "idle"),
+            "acknowledgement_status": self._last_acknowledgement_outcome.get("status", "idle"),
+            "speech_monitoring_active": bool(getattr(self, "_speech_monitoring_active", False)),
+        }
+        _write_json_atomically(self._status_file(), status_payload)
 
     def _contract_key(self, trigger_id: str) -> str:
         return _session_token(trigger_id)
@@ -610,7 +612,11 @@ class ReviewGateServer:
         async def call_tool(name: str, arguments: dict):
             """Handle tool calls from Cursor Agent with immediate activation"""
             logger.info(f"🎯 CURSOR AGENT CALLED TOOL: {name}")
-            logger.info(f"📋 Tool arguments: {arguments}")
+            logger.info(
+                "📋 Tool request metadata: name=%s arg_keys=%s",
+                name,
+                sorted((arguments or {}).keys())
+            )
             
             # Add processing delay to ensure proper handling
             await asyncio.sleep(0.5)  # Wait 500ms for proper processing
@@ -644,10 +650,13 @@ class ReviewGateServer:
         urgent = args.get("urgent", False)
         timeout = args.get("timeout", 300)  # Default 5 minutes
         
-        logger.info(f"🎯 UNIFIED Review Gate activated - Mode: {mode}")
-        logger.info(f"📝 Title: {title}")
-        logger.info(f"📄 Message: {message}")
-        logger.info(f"⏱️ Timeout: {timeout}s")
+        logger.info(
+            "🎯 Unified Review Gate activated mode=%s title_chars=%s message_chars=%s timeout=%ss",
+            mode,
+            len(title),
+            len(message),
+            timeout,
+        )
         
         # Create trigger file for Cursor extension IMMEDIATELY
         trigger_id = f"unified_{mode}_{int(time.time() * 1000)}"
@@ -686,7 +695,11 @@ class ReviewGateServer:
                 
                 if user_input:
                     # Return user input directly to MCP client with mode context
-                    logger.info(f"✅ RETURNING USER INPUT TO MCP CLIENT: {user_input[:100]}...")
+                    logger.info(
+                        "✅ Returning unified Review Gate response trigger=%s chars=%s",
+                        trigger_id,
+                        len(user_input),
+                    )
                     result_message = f"✅ User Response (Mode: {mode})\n\n"
                     result_message += f"💬 Input: {user_input}\n"
                     result_message += f"📝 Request: {message}\n"
@@ -717,9 +730,11 @@ class ReviewGateServer:
         self._set_session_outcome("pending")
         self._set_acknowledgement_outcome("pending")
         
-        logger.info(f"💬 ACTIVATING Review Gate chat popup IMMEDIATELY for Cursor Agent")
-        logger.info(f"📝 Title: {title}")
-        logger.info(f"📄 Message: {message}")
+        logger.info(
+            "💬 Activating Review Gate chat popup title_chars=%s message_chars=%s",
+            len(title),
+            len(message),
+        )
         
         # Create trigger file for Cursor extension IMMEDIATELY
         trigger_id = f"review_{int(time.time() * 1000)}"  # Use milliseconds for uniqueness
@@ -758,7 +773,12 @@ class ReviewGateServer:
                 
                 if user_input:
                     # Return user input directly to MCP client
-                    logger.info(f"✅ RETURNING USER REVIEW TO MCP CLIENT: {user_input[:100]}...")
+                    logger.info(
+                        "✅ Returning Review Gate response trigger=%s chars=%s attachments=%s",
+                        trigger_id,
+                        len(user_input),
+                        len(self._last_attachments or []),
+                    )
                     
                     # Check for images in the last response data
                     response_content = [TextContent(type="text", text=f"User Response: {user_input}")]
@@ -811,7 +831,11 @@ class ReviewGateServer:
             try:
                 user_input = await self._wait_for_user_input(trigger_id, timeout=1)
                 if user_input:
-                    logger.info(f"✅ RETRIEVED USER INPUT: {user_input[:100]}...")
+                    logger.info(
+                        "✅ Retrieved Review Gate response trigger=%s chars=%s",
+                        trigger_id,
+                        len(user_input),
+                    )
 
                     result_message = f"✅ User Input Retrieved\n\n"
                     result_message += f"💬 User Response: {user_input}\n"
@@ -873,7 +897,11 @@ class ReviewGateServer:
                 
                 if user_input:
                     # Return user input directly to MCP client
-                    logger.info(f"✅ RETURNING QUICK REVIEW TO MCP CLIENT: {user_input}")
+                    logger.info(
+                        "✅ Returning quick review trigger=%s chars=%s",
+                        trigger_id,
+                        len(user_input),
+                    )
                     return [TextContent(type="text", text=user_input)]
 
                 response = f"TIMEOUT: No quick review input received within 1.5 minutes"
@@ -913,7 +941,11 @@ class ReviewGateServer:
                 
                 if user_input:
                     response = f"📁 File Review completed!\n\n**Selected Files:** {user_input}\n\n**Instruction:** {instruction}\n**Allowed Types:** {', '.join(file_types)}\n\nYou can now proceed to analyze the selected files."
-                    logger.info(f"✅ FILES SELECTED: {user_input}")
+                    logger.info(
+                        "✅ Returning file review selection trigger=%s chars=%s",
+                        trigger_id,
+                        len(user_input),
+                    )
                 else:
                     response = f"⏰ File Review timed out.\n\n**Instruction:** {instruction}\n\nNo files selected within 1.5 minutes. Try again or proceed with current workspace files."
                     logger.warning("⚠️ File review timed out")
@@ -934,8 +966,13 @@ class ReviewGateServer:
         context = args.get("context", "")
         processing_mode = args.get("processing_mode", "immediate")
         
-        logger.info(f"🚀 ACTIVATING ingest_text IMMEDIATELY for Cursor Agent: {text_content[:100]}...")
-        logger.info(f"📍 Source: {source}, Context: {context}, Mode: {processing_mode}")
+        logger.info(
+            "🚀 Activating ingest_text source=%s context_chars=%s mode=%s text_chars=%s",
+            source,
+            len(context),
+            processing_mode,
+            len(text_content),
+        )
         
         # Create trigger for ingest_text IMMEDIATELY (consistent with other tools)
         trigger_id = f"ingest_{int(time.time() * 1000)}"
@@ -1023,11 +1060,19 @@ class ReviewGateServer:
                         self.shutdown_requested = True
                         self.shutdown_reason = f"User confirmed: {user_input.strip()}"
                         response = f"🛑 shutdown_mcp CONFIRMED!\n\n**User Confirmation:** {user_input}\n\n**Reason:** {reason}\n**Immediate:** {immediate}\n**Cleanup:** {cleanup}\n\n✅ MCP server will now shut down gracefully..."
-                        logger.info(f"✅ SHUTDOWN CONFIRMED BY USER: {user_input[:100]}...")
+                        logger.info(
+                            "✅ Shutdown confirmed by user trigger=%s chars=%s",
+                            trigger_id,
+                            len(user_input),
+                        )
                         logger.info(f"🛑 Server shutdown initiated - reason: {self.shutdown_reason}")
                     else:
                         response = f"💡 shutdown_mcp CANCELLED - Alternative instructions received!\n\n**User Response:** {user_input}\n\n**Original Reason:** {reason}\n\nShutdown cancelled. User provided alternative instructions instead of confirmation."
-                        logger.info(f"💡 SHUTDOWN CANCELLED - user provided alternative: {user_input[:100]}...")
+                        logger.info(
+                            "💡 Shutdown cancelled with alternative instructions trigger=%s chars=%s",
+                            trigger_id,
+                            len(user_input),
+                        )
                 else:
                     response = f"⏰ shutdown_mcp timed out.\n\n**Reason:** {reason}\n\nNo response received within 1 minute. Shutdown cancelled due to timeout."
                     logger.warning("⚠️ Shutdown timed out - shutdown cancelled")
@@ -1251,7 +1296,12 @@ class ReviewGateServer:
                             
                             if user_input:
                                 self._set_session_outcome("response", "User response received", source_file=str(response_file))
-                                logger.info(f"🎉 RECEIVED USER INPUT for trigger {trigger_id}: {user_input[:100]}...")
+                                logger.info(
+                                    "🎉 Received Review Gate response trigger=%s chars=%s attachments=%s",
+                                    trigger_id,
+                                    len(user_input),
+                                    len(self._last_attachments or []),
+                                )
                                 return user_input
                             else:
                                 self._clear_last_attachments()
@@ -1303,7 +1353,12 @@ class ReviewGateServer:
                 "immediate_activation": True
             }
             
-            logger.info(f"🎯 CREATING trigger file with data: {json.dumps(trigger_data, indent=2)}")
+            logger.info(
+                "🎯 Creating trigger envelope trigger=%s tool=%s session_dir=%s",
+                trigger_id,
+                str(data.get("tool") or "unknown"),
+                trigger_file.parent.name,
+            )
             
             # Write trigger file with immediate flush
             _write_json_atomically(trigger_file, trigger_data)
@@ -1333,7 +1388,7 @@ class ReviewGateServer:
                     await asyncio.sleep(0.1)  # Wait 100ms between attempts
             
             logger.info(f"🔥 IMMEDIATE trigger created for Cursor: {trigger_file}")
-            logger.info(f"📁 Trigger file path: {trigger_file.absolute()}")
+            logger.info(f"📁 Trigger file ready: {trigger_file.name}")
             logger.info(f"📊 Trigger file size: {file_size} bytes")
             
             # Add small delay to allow extension to process
@@ -1342,20 +1397,13 @@ class ReviewGateServer:
             # Note: Trigger file may have been consumed by extension already, which is good!
             try:
                 if trigger_file.exists():
-                    logger.info(f"✅ Trigger file still exists: {trigger_file}")
+                    logger.info(f"✅ Trigger file still exists: {trigger_file.name}")
                 else:
-                    logger.info(f"✅ Trigger file was consumed by extension: {trigger_file}")
+                    logger.info(f"✅ Trigger file was consumed by extension: {trigger_file.name}")
                     logger.info(f"🎯 This is expected behavior - extension is working properly")
             except Exception as check_error:
                 logger.info(f"✅ Cannot check trigger file status (likely consumed): {check_error}")
                 logger.info(f"🎯 This is expected behavior - extension is working properly")
-            
-            # Check if extension might be watching
-            log_file = Path(get_temp_path("review_gate_v2.log"))
-            if log_file.exists():
-                logger.info(f"📝 MCP log file exists: {log_file}")
-            else:
-                logger.warning(f"⚠️ MCP log file missing: {log_file}")
             
             # Force log flush
             for handler in logger.handlers:
@@ -1392,7 +1440,7 @@ class ReviewGateServer:
             # Create shutdown monitor task
             shutdown_task = asyncio.create_task(self._monitor_shutdown())
             
-            # Create heartbeat task to keep log file fresh for extension status monitoring
+            # Create heartbeat task to keep the redacted status file fresh for extension monitoring
             heartbeat_task = asyncio.create_task(self._heartbeat_logger())
             
             # Wait for either server completion or shutdown request
@@ -1408,6 +1456,11 @@ class ReviewGateServer:
                     await task
                 except asyncio.CancelledError:
                     pass
+
+            try:
+                self._write_status_heartbeat("shutting_down" if self.shutdown_requested else "stopped")
+            except Exception as status_error:
+                logger.warning(f"⚠️ Failed to write final status heartbeat: {status_error}")
             
             if self.shutdown_requested:
                 logger.info(f"🛑 Review Gate v2 server shutting down: {self.shutdown_reason}")
@@ -1415,20 +1468,17 @@ class ReviewGateServer:
                 logger.info("🏁 Review Gate v2 server completed normally")
 
     async def _heartbeat_logger(self):
-        """Periodically update log file to keep MCP status active in extension"""
-        logger.info("💓 Starting heartbeat logger for extension status monitoring")
-        heartbeat_count = 0
+        """Periodically update the redacted MCP status file for the extension."""
+        logger.info("💓 Starting MCP status heartbeat")
+        self._write_status_heartbeat("running")
         
         while not self.shutdown_requested:
             try:
-                # Update log every 10 seconds to keep file modification time fresh
                 await asyncio.sleep(10)
-                heartbeat_count += 1
+                self._heartbeat_count += 1
+                self._write_status_heartbeat("running")
+                logger.info(f"💓 MCP heartbeat #{self._heartbeat_count}")
                 
-                # Write heartbeat to log
-                logger.info(f"💓 MCP heartbeat #{heartbeat_count} - Server is active and ready")
-                
-                # Force log flush to ensure file is updated
                 for handler in logger.handlers:
                     if hasattr(handler, 'flush'):
                         handler.flush()
@@ -1437,7 +1487,8 @@ class ReviewGateServer:
                 logger.error(f"❌ Heartbeat error: {e}")
                 await asyncio.sleep(5)
         
-        logger.info("💔 Heartbeat logger stopped")
+        self._write_status_heartbeat("shutting_down")
+        logger.info("💔 MCP status heartbeat stopped")
     
     async def _monitor_shutdown(self):
         """Monitor for shutdown requests in a separate task"""
@@ -1446,6 +1497,7 @@ class ReviewGateServer:
         
         # Cleanup operations before shutdown
         logger.info("🧹 Performing cleanup operations before shutdown...")
+        self._write_status_heartbeat("shutting_down")
         
         try:
             for session_path in _sessions_root().iterdir():
@@ -1622,7 +1674,11 @@ class ReviewGateServer:
             segments, info = self._whisper_model.transcribe(audio_file, beam_size=5)
             transcription = " ".join(segment.text for segment in segments).strip()
             
-            logger.info(f"✅ Speech transcribed: '{transcription}'")
+            logger.info(
+                "✅ Speech transcription completed trigger=%s chars=%s",
+                trigger_id,
+                len(transcription),
+            )
             
             # Write response
             self._write_speech_response(trigger_id, transcription)
