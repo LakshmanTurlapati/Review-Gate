@@ -334,6 +334,7 @@ class ReviewGateServer:
         title = args.get("title", "Review Gate V2 - ゲート")
         context = args.get("context", "")
         urgent = args.get("urgent", False)
+        self._last_attachments = []
         
         logger.info(f"💬 ACTIVATING Review Gate chat popup IMMEDIATELY for Cursor Agent")
         logger.info(f"📝 Title: {title}")
@@ -392,63 +393,45 @@ class ReviewGateServer:
                 
                 return response_content
             else:
+                self._last_attachments = []
                 response = f"TIMEOUT: No user input received for review gate within 5 minutes"
                 logger.warning("⚠️ Review Gate timed out waiting for user input after 5 minutes")
                 return [TextContent(type="text", text=response)]
         else:
+            self._last_attachments = []
             response = f"ERROR: Failed to trigger Review Gate popup"
             logger.error("❌ Failed to trigger Review Gate popup")
             return [TextContent(type="text", text=response)]
 
     async def _handle_get_user_input(self, args: dict) -> list[TextContent]:
-        """Retrieve user input from any available response files"""
+        """Retrieve user input for a specific session-scoped response file"""
         timeout = args.get("timeout", 10)
+        trigger_id = str(args.get("trigger_id", "")).strip()
+
+        if not trigger_id:
+            logger.warning("⚠️ get_user_input called without trigger_id")
+            return [TextContent(type="text", text="ERROR: trigger_id is required for session-scoped user input retrieval.")]
         
-        logger.info(f"🔍 CHECKING for user input (timeout: {timeout}s)")
+        logger.info(f"🔍 CHECKING for user input (timeout: {timeout}s, trigger_id: {trigger_id})")
         
         start_time = time.time()
         
         while time.time() - start_time < timeout:
             try:
-                for response_file_path in sorted(glob.glob(_session_glob("response"))):
-                    response_file = Path(response_file_path)
-                    if not response_file.exists():
-                        continue
+                user_input = await self._wait_for_user_input(trigger_id, timeout=1)
+                if user_input:
+                    logger.info(f"✅ RETRIEVED USER INPUT: {user_input[:100]}...")
 
-                    try:
-                        file_content = response_file.read_text().strip()
-                        logger.info(f"📄 Found response file {response_file}: {file_content[:200]}...")
+                    result_message = f"✅ User Input Retrieved\n\n"
+                    result_message += f"💬 User Response: {user_input}\n"
+                    result_message += f"📁 Source File: {_session_file('response', trigger_id).name}\n"
+                    result_message += f"⏰ Retrieved at: {datetime.now().isoformat()}\n\n"
+                    result_message += f"🎯 User input successfully captured from Review Gate."
 
-                        if file_content.startswith('{'):
-                            data = json.loads(file_content)
-                            user_input = data.get("user_input", data.get("response", data.get("message", ""))).strip()
-                        else:
-                            user_input = file_content
-
-                        if user_input:
-                            try:
-                                response_file.unlink()
-                                logger.info(f"🧹 Response file cleaned up: {response_file}")
-                            except Exception as cleanup_error:
-                                logger.warning(f"⚠️ Cleanup error: {cleanup_error}")
-
-                            logger.info(f"✅ RETRIEVED USER INPUT: {user_input[:100]}...")
-
-                            result_message = f"✅ User Input Retrieved\n\n"
-                            result_message += f"💬 User Response: {user_input}\n"
-                            result_message += f"📁 Source File: {response_file.name}\n"
-                            result_message += f"⏰ Retrieved at: {datetime.now().isoformat()}\n\n"
-                            result_message += f"🎯 User input successfully captured from Review Gate."
-
-                            return [TextContent(type="text", text=result_message)]
-
-                    except json.JSONDecodeError as e:
-                        logger.error(f"❌ JSON decode error in {response_file}: {e}")
-                    except Exception as e:
-                        logger.error(f"❌ Error processing response file {response_file}: {e}")
+                    return [TextContent(type="text", text=result_message)]
                 
                 # Short sleep to avoid excessive CPU usage
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(0.1)
                 
             except Exception as e:
                 logger.error(f"❌ Error in get_user_input loop: {e}")
@@ -456,7 +439,7 @@ class ReviewGateServer:
         
         # No input found within timeout
         no_input_message = f"⏰ No user input found within {timeout} seconds\n\n"
-        no_input_message += f"🔍 Checked pattern: {_session_glob('response')}\n"
+        no_input_message += f"🔍 Checked file: {_session_file('response', trigger_id)}\n"
         no_input_message += f"💡 User may not have provided input yet, or the popup may not be active.\n\n"
         no_input_message += f"🎯 Try calling this tool again after the user provides input."
         
@@ -657,14 +640,33 @@ class ReviewGateServer:
         while time.time() - start_time < timeout:
             try:
                 if ack_file.exists():
-                    data = json.loads(ack_file.read_text())
-                    ack_status = data.get("acknowledged", False)
-                    
-                    # Clean up acknowledgement file immediately
+                    try:
+                        data = json.loads(ack_file.read_text())
+                    except json.JSONDecodeError as e:
+                        logger.error(f"❌ Invalid acknowledgement JSON for {trigger_id}: {e}")
+                        try:
+                            ack_file.unlink()
+                        except Exception:
+                            pass
+                        await asyncio.sleep(check_interval)
+                        continue
+
+                    ack_trigger_id = data.get("trigger_id", "")
+                    if ack_trigger_id and ack_trigger_id != trigger_id:
+                        logger.warning(f"⚠️ Removing mismatched acknowledgement envelope for {ack_trigger_id}")
+                        try:
+                            ack_file.unlink()
+                        except Exception:
+                            pass
+                        await asyncio.sleep(check_interval)
+                        continue
+
+                    ack_status = bool(data.get("acknowledged", False))
+
                     try:
                         ack_file.unlink()
                         logger.info(f"🧹 Acknowledgement file cleaned up")
-                    except:
+                    except Exception:
                         pass
                     
                     if ack_status:
@@ -682,7 +684,7 @@ class ReviewGateServer:
         return False
 
     async def _wait_for_user_input(self, trigger_id: str, timeout: int = 120) -> Optional[str]:
-        """Wait for user input from the Cursor extension popup with frequent checks and multiple response patterns"""
+        """Wait for user input from the Cursor extension popup for a single session file."""
         response_patterns = [_session_file("response", trigger_id)]
         
         logger.info(f"👁️ Monitoring for response files: {[str(p) for p in response_patterns]}")
@@ -702,14 +704,30 @@ class ReviewGateServer:
                             
                             # Handle JSON format
                             if file_content.startswith('{'):
-                                data = json.loads(file_content)
+                                try:
+                                    data = json.loads(file_content)
+                                except json.JSONDecodeError as e:
+                                    logger.error(f"❌ JSON decode error in {response_file}: {e}")
+                                    self._last_attachments = []
+                                    try:
+                                        response_file.unlink()
+                                    except Exception:
+                                        pass
+                                    continue
+
                                 user_input = data.get("user_input", data.get("response", data.get("message", ""))).strip()
                                 attachments = data.get("attachments", [])
                                 
                                 # Also check if trigger_id matches (if specified)
                                 response_trigger_id = data.get("trigger_id", "")
                                 if response_trigger_id and response_trigger_id != trigger_id:
-                                    logger.info(f"⚠️ Trigger ID mismatch: expected {trigger_id}, got {response_trigger_id}")
+                                    logger.warning(f"⚠️ Removing mismatched response envelope: expected {trigger_id}, got {response_trigger_id}")
+                                    self._last_attachments = []
+                                    try:
+                                        response_file.unlink()
+                                        logger.info(f"🧹 Removed mismatched response file: {response_file}")
+                                    except Exception as cleanup_error:
+                                        logger.warning(f"⚠️ Cleanup error for mismatched response: {cleanup_error}")
                                     continue
                                 
                                 # Process attachments if present
@@ -744,11 +762,11 @@ class ReviewGateServer:
                                 logger.info(f"🎉 RECEIVED USER INPUT for trigger {trigger_id}: {user_input[:100]}...")
                                 return user_input
                             else:
+                                self._last_attachments = []
                                 logger.warning(f"⚠️ Empty user input in file: {response_file}")
                                 
-                        except json.JSONDecodeError as e:
-                            logger.error(f"❌ JSON decode error in {response_file}: {e}")
                         except Exception as e:
+                            self._last_attachments = []
                             logger.error(f"❌ Error processing response file {response_file}: {e}")
                 
                 # Check more frequently for faster response
@@ -758,6 +776,7 @@ class ReviewGateServer:
                 logger.error(f"❌ Error in wait loop: {e}")
                 await asyncio.sleep(0.5)
         
+        self._last_attachments = []
         logger.warning(f"⏰ TIMEOUT waiting for user input (trigger_id: {trigger_id})")
         return None
 
@@ -773,6 +792,14 @@ class ReviewGateServer:
                 return False
 
             trigger_file = _session_file("trigger", trigger_id)
+            for kind in ("ack", "response", "trigger"):
+                session_path = _session_file(kind, trigger_id)
+                if session_path.exists():
+                    try:
+                        session_path.unlink()
+                        logger.info(f"🧹 Removed stale {kind} file for trigger {trigger_id}")
+                    except Exception as cleanup_error:
+                        logger.warning(f"⚠️ Could not remove stale {kind} file {session_path}: {cleanup_error}")
             
             trigger_data = {
                 "timestamp": datetime.now().isoformat(),
