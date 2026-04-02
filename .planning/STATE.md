@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: executing
-stopped_at: Phase 03 complete; Phase 04 ready to plan
-last_updated: "2026-04-02T21:28:21.138Z"
+stopped_at: Completed 04-01-PLAN.md
+last_updated: "2026-04-02T21:47:40.873Z"
 last_activity: 2026-04-02
 progress:
   total_phases: 5
   completed_phases: 3
-  total_plans: 10
-  completed_plans: 10
-  percent: 60
+  total_plans: 13
+  completed_plans: 11
+  percent: 85
 ---
 
 # Project State
@@ -26,19 +26,19 @@ See: .planning/PROJECT.md (updated 2026-04-02)
 ## Current Position
 
 Phase: 4 of 5 (automated hardening verification)
-Plan: Not started
-Status: Ready to plan
+Plan: 2 of 3
+Status: Ready to execute
 Last activity: 2026-04-02
 
-Progress: [██████░░░░] 60%
+Progress: [█████████░] 85%
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 10
-- Average duration: 5.5 min
-- Total execution time: 0.9 hours
+- Total plans completed: 11
+- Average duration: 5.3 min
+- Total execution time: 1.0 hours
 
 **By Phase:**
 
@@ -47,10 +47,11 @@ Progress: [██████░░░░] 60%
 | 01 | 4 | 10 min | 2.5 min |
 | 02 | 2 | 14 min | 7.0 min |
 | 03 | 4 | 31 min | 7.75 min |
+| 04 | 1 | 3 min | 3.0 min |
 
 **Recent Trend:**
 
-- Last 5 plans: 02-02, 03-01, 03-02, 03-03, 03-04
+- Last 5 plans: 03-01, 03-02, 03-03, 03-04, 04-01
 - Trend: Active
 
 *Updated after each plan completion*
@@ -64,6 +65,7 @@ Progress: [██████░░░░] 60%
 | Phase 03 P02 | 6 min | 3 tasks | 2 files |
 | Phase 03 P03 | 10 min | 2 tasks | 1 files |
 | Phase 03 P04 | 10 min | 2 tasks | 2 files |
+| Phase 04 P01 | 3min | 2 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -92,6 +94,9 @@ Recent decisions affecting current work:
 - [Phase 03]: Kept the Phase 2/03-02 session envelope contract intact and added proof only to the initial trigger so busy, cancel, timeout, and response handling did not need a new transport.
 - [Phase 03]: Bound trigger acceptance to both a runtime-secret HMAC and the live review_gate_status.json pid/server_state so stale trigger files are rejected before the popup claims MCP ownership.
 - [Phase 03]: Normalized remaining diagnostics down to trigger ids, counts, and status metadata instead of removing operational logging entirely.
+- [Phase 04]: Kept production code untouched and moved the import seam into tests/python/review_gate_test_loader.py with stubbed MCP and Whisper modules.
+- [Phase 04]: Drove coverage through real session files and IsolatedAsyncioTestCase instead of launching Cursor or mocking the server wait loops.
+- [Phase 04]: Kept macOS /tmp symlink handling inside the loader's isolated test runtime instead of changing production path validation.
 
 ### Pending Todos
 
@@ -99,13 +104,13 @@ None yet.
 
 ### Blockers/Concerns
 
-- No automated regression harness exists yet for the Python server, Cursor extension, or installer matrix.
+- No automated regression harness exists yet for the Cursor extension or installer matrix.
 - Phase 01 still has pending native macOS and Windows smoke tests captured in `01-HUMAN-UAT.md`.
 - Phase 02 still has pending live Cursor popup checks captured in `02-HUMAN-UAT.md`.
 - Phase 03 still has pending live Cursor security checks captured in `03-HUMAN-UAT.md`.
 
 ## Session Continuity
 
-Last session: 2026-04-02T21:28:21.138Z
-Stopped at: Phase 03 complete with deferred live security validation; Phase 04 ready to plan
+Last session: 2026-04-02T21:47:09.838Z
+Stopped at: Completed 04-01-PLAN.md
 Resume file: None

@@ -70,7 +70,7 @@ Plans:
   3. Maintainer can run repeatable smoke checks for supported installers, including MCP configuration merge behavior.
 **Plans**: 3 plans
 Plans:
-- [ ] 04-01-PLAN.md - Add a stdlib Python regression harness for Review Gate server trigger, acknowledgement, response, and timeout behavior.
+- [x] 04-01-PLAN.md - Add a stdlib Python regression harness for Review Gate server trigger, acknowledgement, response, and timeout behavior.
 - [ ] 04-02-PLAN.md - Add a built-in Node regression harness for extension trigger intake, popup lifecycle, session routing, and attachment handling.
 - [ ] 04-03-PLAN.md - Add installer smoke mode, config-helper fixture coverage, and one repo-root release-check command for the full Phase 4 suite.
 
@@ -94,5 +94,5 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5
 | 1. Installation Integrity | 4/4 | Complete | 2026-04-02 |
 | 2. Session Routing Reliability | 2/2 | Complete | 2026-04-02 |
 | 3. Scoped IPC Security | 4/4 | Complete | 2026-04-02 |
-| 4. Automated Hardening Verification | 0/3 | Not started | - |
+| 4. Automated Hardening Verification | 1/3 | In Progress | - |
 | 5. Canonical Release Surface | 0/TBD | Not started | - |
