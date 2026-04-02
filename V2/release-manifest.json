@@ -1,0 +1,9 @@
+{
+  "name": "review-gate-v2",
+  "version": "2.7.3",
+  "artifact_basename": "review-gate-v2-2.7.3.vsix",
+  "canonical_vsix_path": "V2/review-gate-v2-2.7.3.vsix",
+  "rule_path": "V2/ReviewGateV2.mdc",
+  "extension_source_dir": "V2/cursor-extension",
+  "extension_package_json": "V2/cursor-extension/package.json"
+}

@@ -50,7 +50,8 @@
     ]
   },
   "scripts": {
-    "package": "vsce package"
+    "package": "python ../../scripts/package_review_gate_vsix.py package",
+    "package:check": "python ../../scripts/package_review_gate_vsix.py --check"
   },
   "devDependencies": {
     "@vscode/vsce": "^2.32.0"
