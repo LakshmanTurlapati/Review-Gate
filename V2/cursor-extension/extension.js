@@ -844,12 +844,27 @@ function logMessage(message) {
     }
 }
 
-function logUserInput(inputText, eventType = 'MESSAGE', triggerId = null, attachments = []) {
+function logUserInput(inputText, eventType = 'MESSAGE', triggerId = null, attachments = [], metadata = {}) {
     const timestamp = new Date().toISOString();
     const attachmentCount = Array.isArray(attachments) ? attachments.length : 0;
-    const charCount = typeof inputText === 'string' ? inputText.length : 0;
+    const charCount = Number.isFinite(Number(metadata.charCount))
+        ? Math.max(0, Math.floor(Number(metadata.charCount)))
+        : (typeof inputText === 'string' ? inputText.length : 0);
     const sessionLabel = triggerId ? `trigger=${triggerId}` : 'trigger=manual';
-    const logMsg = `[${timestamp}] ${eventType} ${sessionLabel} chars=${charCount} attachments=${attachmentCount}`;
+    const detailParts = [];
+
+    for (const [label, value] of [
+        ['files', metadata.fileCount],
+        ['images', metadata.imageCount],
+        ['items', metadata.itemCount]
+    ]) {
+        const parsedValue = Number(value);
+        if (Number.isFinite(parsedValue) && parsedValue >= 0) {
+            detailParts.push(`${label}=${Math.floor(parsedValue)}`);
+        }
+    }
+
+    const logMsg = `[${timestamp}] ${eventType} ${sessionLabel} chars=${charCount} attachments=${attachmentCount}${detailParts.length ? ` ${detailParts.join(' ')}` : ''}`;
     
     if (outputChannel) {
         outputChannel.appendLine(logMsg);
@@ -1300,13 +1315,13 @@ function openReviewGatePopup(context, options = {}) {
                     handleImageUpload(currentTriggerId);
                     break;
                 case 'logPastedImage':
-                    logUserInput(`Image pasted from clipboard: ${webviewMessage.fileName} (${webviewMessage.size} bytes, ${webviewMessage.mimeType})`, 'IMAGE_PASTED', currentTriggerId);
+                    logUserInput('', 'IMAGE_PASTED', currentTriggerId, [], { imageCount: 1 });
                     break;
                 case 'logDragDropImage':
-                    logUserInput(`Image dropped from drag and drop: ${webviewMessage.fileName} (${webviewMessage.size} bytes, ${webviewMessage.mimeType})`, 'IMAGE_DROPPED', currentTriggerId);
+                    logUserInput('', 'IMAGE_DROPPED', currentTriggerId, [], { imageCount: 1 });
                     break;
                 case 'logImageRemoved':
-                    logUserInput(`Image removed: ${webviewMessage.imageId}`, 'IMAGE_REMOVED', currentTriggerId);
+                    logUserInput('', 'IMAGE_REMOVED', currentTriggerId, [], { imageCount: 1 });
                     break;
                 case 'startRecording':
                     logUserInput('User started speech recording', 'SPEECH_START', currentTriggerId);
@@ -2668,14 +2683,16 @@ function handleReviewMessage(text, attachments, triggerId, mcpIntegration, speci
     // Handle special cases for different tool types
     if (specialHandling === 'shutdown_mcp') {
         if (text.toUpperCase().includes('CONFIRM') || text.toUpperCase() === 'YES') {
-            logUserInput(`SHUTDOWN CONFIRMED: ${text}`, 'SHUTDOWN_CONFIRMED', triggerId);
+            logUserInput('', 'SHUTDOWN_CONFIRMED', triggerId, attachments, {
+                charCount: typeof text === 'string' ? text.length : 0
+            });
             
             // Send confirmation response
             if (chatPanel) {
                 setTimeout(() => {
                     chatPanel.webview.postMessage({
                         command: 'addMessage',
-                        text: `🛑 SHUTDOWN CONFIRMED: "${text}"\n\nMCP server shutdown has been approved by user.\n\nCursor Agent will proceed with graceful shutdown.`,
+                        text: `🛑 Shutdown approved: "${text}"\n\nMCP server shutdown has been approved by user.\n\nCursor Agent will proceed with graceful shutdown.`,
                         type: 'system'
                     });
                     
@@ -2691,14 +2708,16 @@ function handleReviewMessage(text, attachments, triggerId, mcpIntegration, speci
                 }, 500);
             }
         } else {
-            logUserInput(`SHUTDOWN ALTERNATIVE: ${text}`, 'SHUTDOWN_ALTERNATIVE', triggerId);
+            logUserInput('', 'SHUTDOWN_ALTERNATIVE', triggerId, attachments, {
+                charCount: typeof text === 'string' ? text.length : 0
+            });
             
             // Send alternative instructions response
             if (chatPanel) {
                 setTimeout(() => {
                     chatPanel.webview.postMessage({
                         command: 'addMessage',
-                        text: `💡 ALTERNATIVE INSTRUCTIONS: "${text}"\n\nYour instructions have been sent to the Cursor Agent instead of shutdown confirmation.\n\nThe Agent will process your alternative request.`,
+                        text: `💡 Alternate instructions received: "${text}"\n\nYour instructions have been sent to the Cursor Agent instead of shutdown confirmation.\n\nThe Agent will process your alternative request.`,
                         type: 'system'
                     });
                     
@@ -2715,14 +2734,16 @@ function handleReviewMessage(text, attachments, triggerId, mcpIntegration, speci
             }
         }
     } else if (specialHandling === 'ingest_text') {
-        logUserInput(`TEXT FEEDBACK: ${text}`, 'TEXT_FEEDBACK', triggerId);
+        logUserInput('', 'TEXT_FEEDBACK', triggerId, attachments, {
+            charCount: typeof text === 'string' ? text.length : 0
+        });
         
         // Send text feedback response
         if (chatPanel) {
             setTimeout(() => {
                 chatPanel.webview.postMessage({
                     command: 'addMessage',
-                    text: `🔄 TEXT INPUT PROCESSED: "${text}"\n\nYour feedback on the ingested text has been sent to the Cursor Agent.\n\nThe Agent will continue processing with your input.`,
+                    text: `🔄 Text input processed: "${text}"\n\nYour feedback on the ingested text has been sent to the Cursor Agent.\n\nThe Agent will continue processing with your input.`,
                     type: 'system'
                 });
                 
@@ -2738,10 +2759,6 @@ function handleReviewMessage(text, attachments, triggerId, mcpIntegration, speci
             }, 500);
         }
     } else {
-        // Standard handling for other tools
-        // Log to output channel for persistence
-        outputChannel.appendLine(`${mcpIntegration ? 'MCP RESPONSE' : 'REVIEW'} SUBMITTED: ${text}`);
-        
         // Send standard response back to webview
         if (chatPanel) {
             setTimeout(() => {
@@ -2784,7 +2801,7 @@ function handleFileAttachment(triggerId) {
             const filePaths = fileUris.map(uri => uri.fsPath);
             const fileNames = filePaths.map(fp => path.basename(fp));
             
-            logUserInput(`Files selected for review: ${fileNames.join(', ')}`, 'FILE_SELECTED', triggerId);
+            logUserInput('', 'FILE_SELECTED', triggerId, [], { fileCount: fileNames.length });
             
             if (chatPanel) {
                 chatPanel.webview.postMessage({
@@ -2831,7 +2848,7 @@ function handleImageUpload(triggerId) {
                         size: imageBuffer.length
                     };
                     
-                    logUserInput(`Image uploaded: ${fileName}`, 'IMAGE_UPLOADED', triggerId);
+                    logUserInput('', 'IMAGE_UPLOADED', triggerId, [], { imageCount: 1 });
                     
                     // Send image data to webview
                     if (chatPanel) {

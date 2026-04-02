@@ -785,6 +785,7 @@ class ReviewGateServer:
                     
                     # If we have stored attachment data, include images
                     if hasattr(self, '_last_attachments') and self._last_attachments:
+                        image_attachment_count = 0
                         for attachment in self._last_attachments:
                             if attachment.get('mimeType', '').startswith('image/'):
                                 try:
@@ -794,9 +795,15 @@ class ReviewGateServer:
                                         mimeType=attachment['mimeType']
                                     )
                                     response_content.append(image_content)
-                                    logger.info(f"📸 Added image to response: {attachment.get('fileName', 'unknown')}")
+                                    image_attachment_count += 1
                                 except Exception as e:
                                     logger.error(f"❌ Error adding image to response: {e}")
+                        if image_attachment_count:
+                            logger.info(
+                                "📸 Added image attachments to Review Gate response trigger=%s count=%s",
+                                trigger_id,
+                                image_attachment_count,
+                            )
                     
                     return response_content
 
@@ -874,10 +881,15 @@ class ReviewGateServer:
         prompt = args.get("prompt", "Quick feedback needed:")
         context = args.get("context", "")
         
-        logger.info(f"⚡ ACTIVATING Quick Review IMMEDIATELY for Cursor Agent: {prompt}")
-        
-        # Create trigger for quick input IMMEDIATELY
         trigger_id = f"quick_{int(time.time() * 1000)}"
+        logger.info(
+            "⚡ Activating quick review trigger=%s prompt_chars=%s context_chars=%s",
+            trigger_id,
+            len(prompt),
+            len(context),
+        )
+
+        # Create trigger for quick input IMMEDIATELY
         success = await self._trigger_cursor_popup_immediately({
             "tool": "quick_review",
             "prompt": prompt,
@@ -918,10 +930,15 @@ class ReviewGateServer:
         instruction = args.get("instruction", "Please select file(s) for review:")
         file_types = args.get("file_types", ["*"])
         
-        logger.info(f"📁 ACTIVATING File Review IMMEDIATELY for Cursor Agent: {instruction}")
-        
-        # Create trigger for file picker IMMEDIATELY
         trigger_id = f"file_{int(time.time() * 1000)}"
+        logger.info(
+            "📁 Activating file review trigger=%s instruction_chars=%s file_type_count=%s",
+            trigger_id,
+            len(instruction),
+            len(file_types),
+        )
+
+        # Create trigger for file picker IMMEDIATELY
         success = await self._trigger_cursor_popup_immediately({
             "tool": "file_review",
             "instruction": instruction,
@@ -1032,10 +1049,16 @@ class ReviewGateServer:
         immediate = args.get("immediate", False)
         cleanup = args.get("cleanup", True)
         
-        logger.info(f"🛑 ACTIVATING shutdown_mcp IMMEDIATELY for Cursor Agent: {reason}")
-        
-        # Create trigger for shutdown_mcp IMMEDIATELY
         trigger_id = f"shutdown_{int(time.time() * 1000)}"
+        logger.info(
+            "🛑 Activating shutdown_mcp trigger=%s reason_chars=%s immediate=%s cleanup=%s",
+            trigger_id,
+            len(reason),
+            bool(immediate),
+            bool(cleanup),
+        )
+
+        # Create trigger for shutdown_mcp IMMEDIATELY
         success = await self._trigger_cursor_popup_immediately({
             "tool": "shutdown_mcp",
             "reason": reason,
@@ -1065,7 +1088,11 @@ class ReviewGateServer:
                             trigger_id,
                             len(user_input),
                         )
-                        logger.info(f"🛑 Server shutdown initiated - reason: {self.shutdown_reason}")
+                        logger.info(
+                            "🛑 Server shutdown initiated trigger=%s reason_chars=%s",
+                            trigger_id,
+                            len(self.shutdown_reason),
+                        )
                     else:
                         response = f"💡 shutdown_mcp CANCELLED - Alternative instructions received!\n\n**User Response:** {user_input}\n\n**Original Reason:** {reason}\n\nShutdown cancelled. User provided alternative instructions instead of confirmation."
                         logger.info(
@@ -1463,7 +1490,10 @@ class ReviewGateServer:
                 logger.warning(f"⚠️ Failed to write final status heartbeat: {status_error}")
             
             if self.shutdown_requested:
-                logger.info(f"🛑 Review Gate v2 server shutting down: {self.shutdown_reason}")
+                logger.info(
+                    "🛑 Review Gate v2 server shutting down reason_chars=%s",
+                    len(self.shutdown_reason),
+                )
             else:
                 logger.info("🏁 Review Gate v2 server completed normally")
 
