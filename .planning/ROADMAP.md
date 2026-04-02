@@ -82,7 +82,11 @@ Plans:
   1. Maintainer can produce or identify one canonical VSIX artifact for the shipped version without duplicate committed alternatives.
   2. Installation and release docs reference the shipped version, supported runtime surface, and correct V2 rule file.
   3. Users and maintainers no longer need to guess which artifact, version string, or rule path is supported for release.
-**Plans**: TBD
+**Plans**: 3 plans
+Plans:
+- [ ] 05-01-PLAN.md - Establish one canonical VSIX contract and packaging output under `V2/`.
+- [ ] 05-02-PLAN.md - Rewire installers and smoke coverage to consume only the canonical release surface.
+- [ ] 05-03-PLAN.md - Align public docs and gate the narrowed release surface through the repo-root regression runner.
 
 ## Progress
 
