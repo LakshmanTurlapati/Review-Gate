@@ -6,7 +6,8 @@
       "env": {
         "PYTHONPATH": "/Users/YOUR_USERNAME/cursor-extensions/review-gate-v2",
         "PYTHONUNBUFFERED": "1",
-        "REVIEW_GATE_MODE": "cursor_integration"
+        "REVIEW_GATE_MODE": "cursor_integration",
+        "SSLKEYLOGFILE": ""
       }
     }
   }
