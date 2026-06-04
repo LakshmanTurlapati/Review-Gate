@@ -28,11 +28,14 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional, Sequence
 
-# Speech-to-text imports
+# Speech-to-text imports. SSLKEYLOGFILE can make urllib3 fail at import on Windows.
+if os.environ.get("SSLKEYLOGFILE"):
+    os.environ.pop("SSLKEYLOGFILE", None)
+
 try:
     from faster_whisper import WhisperModel
     WHISPER_AVAILABLE = True
-except ImportError:
+except Exception:
     WHISPER_AVAILABLE = False
 
 from mcp.server import Server

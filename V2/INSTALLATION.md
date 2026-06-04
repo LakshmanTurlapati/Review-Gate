@@ -179,7 +179,8 @@ Add or update this configuration block (replace paths with your actual paths):
       "env": {
         "PYTHONPATH": "/Users/YOUR_USERNAME/cursor-extensions/review-gate-v2",
         "PYTHONUNBUFFERED": "1",
-        "REVIEW_GATE_MODE": "cursor_integration"
+        "REVIEW_GATE_MODE": "cursor_integration",
+        "SSLKEYLOGFILE": ""
       }
     }
   }
@@ -200,7 +201,8 @@ Add or update this configuration block (replace paths with your actual paths):
       "env": {
         "PYTHONPATH": "C:\\Users\\YOUR_USERNAME\\cursor-extensions\\review-gate-v2",
         "PYTHONUNBUFFERED": "1",
-        "REVIEW_GATE_MODE": "cursor_integration"
+        "REVIEW_GATE_MODE": "cursor_integration",
+        "SSLKEYLOGFILE": ""
       }
     }
   }
@@ -270,6 +272,19 @@ Look for the status indicator in the popup:
 - Orange dot: MCP server is inactive
 
 ## Troubleshooting
+
+### MCP Server Crashes on Start (SSLKEYLOGFILE / Permission denied)
+
+If Cursor logs show `PermissionError` on a `Volume{...}\virtual_file.log` path while loading `faster_whisper` or `urllib3`, a global `SSLKEYLOGFILE` environment variable (often from TLS debugging tools) is blocking the MCP Python process.
+
+1. Remove the user/system variable in Windows Environment Variables, or run:
+
+```powershell
+[Environment]::SetEnvironmentVariable('SSLKEYLOGFILE', $null, 'User')
+```
+
+2. Ensure `review-gate-v2` in `%USERPROFILE%\.cursor\mcp.json` includes `"SSLKEYLOGFILE": ""` in `env` (see Step 5).
+3. Restart Cursor completely.
 
 ### MCP Server Not Starting
 
